@@ -80,7 +80,7 @@
 #endif
 
 #ifndef LWS_DEF_HEADER_LEN
-#define LWS_DEF_HEADER_LEN 4096
+#define LWS_DEF_HEADER_LEN 16384
 #endif
 #ifndef LWS_DEF_HEADER_POOL
 #define LWS_DEF_HEADER_POOL 4
