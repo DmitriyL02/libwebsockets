@@ -27,8 +27,15 @@
 typedef enum dns_query_type {
 	LWS_ADNS_RECORD_A					= 0x01,
 	LWS_ADNS_RECORD_CNAME					= 0x05,
+	LWS_ADNS_RECORD_SOA					= 0x06,
 	LWS_ADNS_RECORD_MX					= 0x0f,
+	LWS_ADNS_RECORD_TXT					= 0x10,
 	LWS_ADNS_RECORD_AAAA					= 0x1c,
+	LWS_ADNS_RECORD_DS					= 0x2b,
+	LWS_ADNS_RECORD_RRSIG					= 0x2e,
+	LWS_ADNS_RECORD_NSEC					= 0x2f,
+	LWS_ADNS_RECORD_DNSKEY					= 0x30,
+	LWS_ADNS_RECORD_NSEC3					= 0x32,
 } adns_query_type_t;
 
 typedef enum {
@@ -40,8 +47,22 @@ typedef enum {
 	LADNS_RET_CONTINUING
 } lws_async_dns_retcode_t;
 
+typedef enum {
+	LWS_ADNS_DNSSEC_OFF = 0,
+	LWS_ADNS_DNSSEC_TOLERATE,
+	LWS_ADNS_DNSSEC_REQUIRE,
+} lws_async_dns_dnssec_mode_t;
+
+#define LWS_ADNS_DNSSEC_VALID	(1 << 8)
+#define LWS_ADNS_DNSSEC_INVALID	(1 << 9)
+
 #define LWS_ADNS_SYNTHETIC	0x10000	/* don't send, synthetic response will
 					 * be injected for testing */
+#define LWS_ADNS_INDICATE_LACKS_DNSSEC	0x20000 /* tolerate missing DNSSEC on this specific lookup */
+#define LWS_ADNS_NOCACHE		0x40000 /* force network query, bypass cache */
+#define LWS_ADNS_WANT_DNSSEC	0x80000 /* Explicitly set DO bit in EDNS0 OPT record */
+#define LWS_ADNS_IGNORE_HOSTS_FILE 0x100000 /* Bypass checking /etc/hosts and force network DNS lookup */
+#define LADNS_NO_WSI_BUT_OK ((struct lws *)(intptr_t)0x1)
 
 struct addrinfo;
 
@@ -50,6 +71,7 @@ typedef struct lws * (*lws_async_dns_cb_t)(struct lws *wsi, const char *ads,
 
 struct lws_adns_q;
 struct lws_async_dns;
+struct lws_async_dns_server;
 
 /**
  * lws_async_dns_query() - perform a dns lookup using async dns
@@ -91,6 +113,22 @@ LWS_VISIBLE LWS_EXTERN void
 lws_async_dns_freeaddrinfo(const struct addrinfo **ai);
 
 /**
+ * lws_async_dns_get_rr_cache() - get a stashed DNSSEC/raw record from the cache
+ *
+ * \param context: the lws_context
+ * \param name: the DNS name
+ * \param qtype: the query type of the record to find (e.g. LWS_ADNS_RECORD_DS)
+ * \param paylen: set to the payload length if found
+ *
+ * Retrieves a pointer to the payload of a cached DNS record that doesn't
+ * normally result in an addrinfo (like DS, DNSKEY, TXT).
+ * Returns NULL if not found or no cache entry exists.
+ */
+LWS_VISIBLE LWS_EXTERN const uint8_t *
+lws_async_dns_get_rr_cache(struct lws_context *context, const char *name,
+			   adns_query_type_t qtype, uint16_t *paylen);
+
+/**
  * lws_async_dns_server_add() - add a DNS server to the lws async DNS list
  *
  * \param cx: the lws_context
@@ -124,7 +162,49 @@ lws_adns_get_tid(struct lws_adns_q *q);
 LWS_VISIBLE LWS_EXTERN struct lws_async_dns *
 lws_adns_get_async_dns(struct lws_adns_q *q);
 
+LWS_VISIBLE LWS_EXTERN struct lws_async_dns_server *
+lws_adns_get_server(struct lws_adns_q *q);
+
 LWS_VISIBLE LWS_EXTERN void
-lws_adns_parse_udp(struct lws_async_dns *dns, const uint8_t *pkt, size_t len);
+lws_adns_parse_udp(struct lws_async_dns *dns, const uint8_t *pkt, size_t len,
+		   struct lws_async_dns_server *dsrv);
+
+/**
+ * lws_plat_asyncdns_get_server() - Get system DNS server address
+ *
+ * \param context: the lws_context
+ * \param n: the zero-based index of the server to get
+ * \param sa46: pointer to lws_sockaddr46 to receive the server address
+ *
+ * This platform-specific primitive allows retrieving the system's DNS
+ * configuration. It returns 0 if the `n`th nameserver is written to `sa46`,
+ * or < 0 if there is no `n`th nameserver available.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_plat_asyncdns_get_server(struct lws_context *context, int n,
+			     lws_sockaddr46 *sa46);
+
+/**
+ * lws_async_dns_server_reload() - reload the OS assigned DNS servers
+ *
+ * \param context: the lws_context
+ *
+ * This forces LWS to re-check the OS for assigned DNS servers.
+ * It is useful when the device has changed networks.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_async_dns_server_reload(struct lws_context *context);
+
+
+/**
+ * lws_async_dns_dnssec_set_mode() - Set the system-wide DNSSEC mode
+ *
+ * \param context: the lws_context
+ * \param mode: the requested DNSSEC mode (off, tolerate, or require)
+ *
+ * Configures how the asynchronous DNS handles DNSSEC validation.
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_async_dns_dnssec_set_mode(struct lws_context *context, lws_async_dns_dnssec_mode_t mode);
 
 #endif

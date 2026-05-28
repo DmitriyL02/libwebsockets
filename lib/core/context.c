@@ -64,7 +64,9 @@ lws_get_library_version(void)
 static const char * system_state_names[] = {
 	"undef",
 	"CONTEXT_CREATED",
+	"PRE_PRIV_DROP",
 	"INITIALIZED",
+	"COLLECTING_STDIN",
 	"IFACE_COLDPLUG",
 	"DHCP",
 	"CPD_PRE_TIME",
@@ -107,6 +109,10 @@ lws_state_notify_protocol_init(struct lws_state_manager *mgr,
 
 	for (n = 0; n < context->count_threads; n++)
 		lws_system_do_attach(&context->pt[n]);
+
+	if (target == LWS_SYSTATE_COLLECTING_STDIN &&
+	    (!context->system_ops || !context->system_ops->stdin_rx))
+		return 0; /* move on */
 
 #if defined(LWS_WITH_SYS_DHCP_CLIENT)
 	if (target == LWS_SYSTATE_DHCP) {
@@ -223,13 +229,12 @@ lws_state_notify_protocol_init(struct lws_state_manager *mgr,
 		 * Start trying to acquire it if it's not already in progress
 		 * returns nonzero if we determine it's not needed
 		 */
-		if (!lws_ss_sys_fetch_policy(context))
+		if (!lws_ss_sys_fetch_policy(context)) {
 			/* we have it */
-			return 0;
-
-		/* deny while we fetch it */
-
-		return 1;
+		} else {
+			/* deny while we fetch it */
+			return 1;
+		}
 	}
 #endif
 #endif
@@ -347,10 +352,6 @@ static const char * const opts_str =
 #if defined(LWS_WITH_SECURE_STREAMS_PROXY_API)
 			"SSPROX "
 #endif
-
-#if defined(LWS_WITH_MBEDTLS)
-			"MbedTLS "
-#endif
 #if defined(LWS_WITH_CONMON)
 			"ConMon "
 #endif
@@ -370,7 +371,7 @@ static const char * const opts_str =
 
 #endif
 
-#if defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
+#if defined(LWS_WITH_NETWORK) && defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
 static const struct lws_evlib_map {
 	uint64_t	flag;
 	const char	*name;
@@ -427,7 +428,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 	int n;
 #endif
 	unsigned int lpf = info->fd_limit_per_thread;
-#if defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
+#if defined(LWS_WITH_NETWORK) && defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
 	struct lws_plugin		*evlib_plugin_list = NULL;
 #if defined(_DEBUG) && !defined(LWS_WITH_NO_LOGS)
 	char		*ld_env;
@@ -567,6 +568,11 @@ lws_create_context(const struct lws_context_creation_info *info)
 		fatal_exit_defer = !!info->foreign_loops;
 		us_wait_resolution = 0;
 	}
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_LIBUV)) {
+		lwsl_cx_err(context, "Application wants libuv, but lws not built with it");
+		goto bail;
+	}
 #endif
 
 #if defined(LWS_WITH_LIBEVENT)
@@ -574,6 +580,11 @@ lws_create_context(const struct lws_context_creation_info *info)
 		extern const lws_plugin_evlib_t evlib_event;
 		plev = &evlib_event;
 		us_wait_resolution = 0;
+	}
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_LIBEVENT)) {
+		lwsl_cx_err(context, "Application wants libevent, but lws not built with it");
+		goto bail;
 	}
 #endif
 
@@ -583,6 +594,11 @@ lws_create_context(const struct lws_context_creation_info *info)
 		plev = &evlib_glib;
 		us_wait_resolution = 0;
 	}
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_GLIB)) {
+		lwsl_cx_err(context, "Application wants glib, but lws not built with it");
+		goto bail;
+	}
 #endif
 
 #if defined(LWS_WITH_LIBEV)
@@ -590,6 +606,11 @@ lws_create_context(const struct lws_context_creation_info *info)
 		extern const lws_plugin_evlib_t evlib_ev;
 		plev = &evlib_ev;
 		us_wait_resolution = 0;
+	}
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_LIBEV)) {
+		lwsl_cx_err(context, "Application wants libev, but lws not built with it");
+		goto bail;
 	}
 #endif
 
@@ -599,6 +620,11 @@ lws_create_context(const struct lws_context_creation_info *info)
         plev = &evlib_sd;
         us_wait_resolution = 0;
     }
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_SDEVENT)) {
+		lwsl_cx_err(context, "Application wants sdevent, but lws not built with it");
+		goto bail;
+	}
 #endif
 
 #if defined(LWS_WITH_ULOOP)
@@ -607,6 +633,11 @@ lws_create_context(const struct lws_context_creation_info *info)
         plev = &evlib_uloop;
         us_wait_resolution = 0;
     }
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_ULOOP)) {
+		lwsl_cx_err(context, "Application wants uloop, but lws not built with it");
+		goto bail;
+	}
 #endif
 
 #endif /* with event libs */
@@ -639,6 +670,8 @@ lws_create_context(const struct lws_context_creation_info *info)
 #if defined(LWS_WITH_NETWORK)
 	context->event_loop_ops = plev->ops;
 	context->us_wait_resolution = us_wait_resolution;
+	context->wol_if = info->wol_if;
+	context->lws_stub = info->lws_stub;
 #if defined(LWS_WITH_TLS_JIT_TRUST)
 	{
 		struct lws_cache_creation_info ci;
@@ -666,6 +699,10 @@ lws_create_context(const struct lws_context_creation_info *info)
 	context->gid = info->gid;
 	context->username = info->username;
 	context->groupname = info->groupname;
+#endif
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL)
+	context->argc			= info->argc;
+	context->argv			= info->argv;
 #endif
 	context->name			= info->vhost_name;
 	if (info->log_cx)
@@ -809,7 +846,45 @@ lws_create_context(const struct lws_context_creation_info *info)
 
 #endif /* network */
 
+#if defined(LWS_WITH_MBEDTLS)
+	{
+		char mbedtls_version[32];
+
+#if defined(MBEDTLS_VERSION_C)
+		mbedtls_version_get_string(mbedtls_version);
+#else
+		lws_snprintf(mbedtls_version, sizeof(mbedtls_version), "%s", MBEDTLS_VERSION_STRING);
+#endif
+		lwsl_cx_notice(context, "LWS: %s, MbedTLS-%s %s%s", library_version, mbedtls_version, opts_str, s);
+	}
+#else
+#if defined(LWS_WITH_SCHANNEL)
+	lwsl_cx_notice(context, "LWS: %s, SChannel, %s%s", library_version, opts_str, s);
+#else
+#if defined(LWS_WITH_TLS)
+#if defined(USE_WOLFSSL)
+	lwsl_cx_notice(context, "LWS: %s, wolfSSL %s, %s%s", library_version, wolfSSL_lib_version(), opts_str, s);
+#elif defined(LWS_WITH_GNUTLS)
+	lwsl_cx_notice(context, "LWS: %s, GnuTLS %s, %s%s", library_version, gnutls_check_version(NULL), opts_str, s);
+#elif defined(LWS_WITH_BORINGSSL)
+	lwsl_cx_notice(context, "LWS: %s, BoringSSL, %s%s", library_version, opts_str, s);
+#elif defined(LWS_WITH_AWSLC)
+	lwsl_cx_notice(context, "LWS: %s, AWS-LC, %s%s", library_version, opts_str, s);
+#elif defined(LWS_WITH_BEARSSL)
+	lwsl_cx_notice(context, "LWS: %s, BearSSL, %s%s", library_version, opts_str, s);
+#elif defined(OPENSSL_VERSION_NUMBER) && (OPENSSL_VERSION_NUMBER >= 0x10100000L)
+	lwsl_cx_notice(context, "LWS: %s, %s, %s%s", library_version, OpenSSL_version(OPENSSL_VERSION), opts_str, s);
+#elif defined(OPENSSL_VERSION_NUMBER)
+	lwsl_cx_notice(context, "LWS: %s, %s, %s%s", library_version, SSLeay_version(SSLEAY_VERSION), opts_str, s);
+#else
+	lwsl_cx_notice(context, "LWS: %s, OpenSSL, %s%s", library_version, opts_str, s);
+#endif
+#else
 	lwsl_cx_notice(context, "LWS: %s, %s%s", library_version, opts_str, s);
+#endif
+#endif
+#endif
+
 #if defined(LWS_WITH_NETWORK)
 	lwsl_cx_info(context, "Event loop: %s", plev->ops->name);
 #endif
@@ -873,6 +948,10 @@ lws_create_context(const struct lws_context_creation_info *info)
         if (info->extensions)
                 lwsl_cx_warn(context, "WITHOUT_EXTENSIONS but exts ptr set");
 #endif
+#if defined(LWS_ROLE_WS) && !defined(LWS_WITHOUT_EXTENSIONS)
+        context->extensions = info->extensions;
+#endif
+
 #endif /* network */
 
 #if defined(LWS_WITH_SECURE_STREAMS)
@@ -892,11 +971,19 @@ lws_create_context(const struct lws_context_creation_info *info)
 
 	mbedtls_client_preload_filepath = info->mbedtls_client_preload_filepath;
 #else
+#if defined(LWS_WITH_SCHANNEL)
+	context->tls_ops = &tls_ops_schannel;
+#elif defined(LWS_WITH_GNUTLS)
+	context->tls_ops = &tls_ops_gnutls;
+#elif defined(LWS_WITH_BEARSSL)
+	context->tls_ops = &tls_ops_bearssl;
+#else
 	context->tls_ops = &tls_ops_openssl;
 #endif
 #endif
+#endif
 
-#if LWS_MAX_SMP > 1
+#if defined(LWS_WITH_NETWORK) && LWS_MAX_SMP > 1
 	lws_mutex_refcount_init(&context->mr);
 #endif
 
@@ -963,7 +1050,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 
 	context->options = info->options;
 
-#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_OPTEE) && !defined(WIN32) && !defined(LWS_PLAT_BAREMETAL)
+#if defined(LWS_HAVE_SYS_RESOURCE_H) && !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_OPTEE) && !defined(WIN32) && !defined(LWS_PLAT_BAREMETAL)
 	/*
 	 * If asked, try to set the rlimit / ulimit for process sockets / files.
 	 * We read the effective limit in a moment, so we will find out the
@@ -1132,8 +1219,14 @@ lws_create_context(const struct lws_context_creation_info *info)
 			context->default_retry.retry_ms_table_count =
 					LWS_ARRAY_SIZE(default_backoff_table);
 	context->default_retry.jitter_percent = 20;
-	context->default_retry.secs_since_valid_ping = 300;
-	context->default_retry.secs_since_valid_hangup = 310;
+	context->default_retry.secs_since_valid_ping = 40;
+	context->default_retry.secs_since_valid_hangup = 50;
+
+#if defined(LWS_WITH_ASYNC_QUEUE)
+	pthread_mutex_init(&context->async_worker_mutex, NULL);
+	pthread_cond_init(&context->async_worker_cond, NULL);
+	context->count_async_threads = info->count_async_threads ? info->count_async_threads : 1;
+#endif
 
 	if (info->retry_and_idle_policy &&
 	    info->retry_and_idle_policy->secs_since_valid_ping) {
@@ -1166,7 +1259,9 @@ lws_create_context(const struct lws_context_creation_info *info)
 		context->pt[n].fake_wsi = (struct lws *)u;
 		u += sizeof(struct lws);
 
-		memset(context->pt[n].fake_wsi, 0, sizeof(struct lws));
+#if !defined(__COVERITY__)
+		memset((void *)context->pt[n].fake_wsi, 0, sizeof(struct lws));
+#endif
 #endif
 
 		context->pt[n].evlib_pt = u;
@@ -1240,6 +1335,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 		    context->max_http_header_pool);
 #endif
 
+#if defined(LWS_WITH_NETWORK)
 #if defined(LWS_WITH_SERVER)
 	if (info->server_string) {
 		context->server_string = info->server_string;
@@ -1247,8 +1343,9 @@ lws_create_context(const struct lws_context_creation_info *info)
 				strlen(context->server_string);
 	}
 #endif
+#endif
 
-#if LWS_MAX_SMP > 1
+#if defined(LWS_WITH_NETWORK) && LWS_MAX_SMP > 1
 	/* each thread serves his own chunk of fds */
 	for (n = 1; n < (int)context->count_threads; n++)
 		context->pt[n].fds = context->pt[n - 1].fds +
@@ -1320,18 +1417,19 @@ lws_create_context(const struct lws_context_creation_info *info)
 	context->count_caps = info->count_caps;
 #endif
 
+#if defined(LWS_WITH_SYS_ASYNC_DNS)
+#endif
+
 
 #if defined(LWS_WITH_NETWORK)
 
-#if defined(LWS_WITH_SYS_ASYNC_DNS) || defined(LWS_WITH_SYS_NTPCLIENT) || \
-	defined(LWS_WITH_SYS_DHCP_CLIENT)
 	{
 		/*
 		 * system vhost
 		 */
 
 		struct lws_context_creation_info ii;
-		const struct lws_protocols *pp[4];
+		const struct lws_protocols *pp[7], *ccop;
 		struct lws_vhost *vh;
 #if defined(LWS_WITH_SYS_ASYNC_DNS)
 		extern const struct lws_protocols lws_async_dns_protocol;
@@ -1341,6 +1439,15 @@ lws_create_context(const struct lws_context_creation_info *info)
 #endif
 #if defined(LWS_WITH_SYS_DHCP_CLIENT)
 		extern const struct lws_protocols lws_system_protocol_dhcpc4;
+#endif
+#if defined(LWS_WITH_SYS_WHOIS)
+		extern const struct lws_protocols lws_system_protocol_whois;
+#endif
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL) && !defined(LWS_PLAT_ANDROID) && defined(LWS_WITH_NETWORK)
+		extern const struct lws_protocols lws_system_protocol_stdin;
+#endif
+#if defined(LWS_WITH_DIR)
+		extern const struct lws_protocols protocol_lws_dir_notify;
 #endif
 
 		n = 0;
@@ -1353,12 +1460,25 @@ lws_create_context(const struct lws_context_creation_info *info)
 #if defined(LWS_WITH_SYS_DHCP_CLIENT)
 		pp[n++] = &lws_system_protocol_dhcpc4;
 #endif
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL) && !defined(LWS_PLAT_ANDROID) && defined(LWS_WITH_NETWORK)
+		pp[n++] = &lws_system_protocol_stdin;
+#endif
+#if defined(LWS_WITH_SYS_WHOIS)
+		pp[n++] = &lws_system_protocol_whois;
+#endif
+#if defined(LWS_WITH_DIR)
+		pp[n++] = &protocol_lws_dir_notify;
+#endif
 		pp[n] = NULL;
 
 		memset(&ii, 0, sizeof(ii));
-		ii.vhost_name = "system";
-		ii.pprotocols = pp;
-		ii.port = CONTEXT_PORT_NO_LISTEN;
+		ii.vhost_name	= "system";
+		ii.pprotocols	= pp;
+		ii.port		= CONTEXT_PORT_NO_LISTEN;
+		ii.options	= LWS_SERVER_OPTION_VH_INSTANTIATE_ALL_PROTOCOLS;
+
+		ccop = context->protocols_copy;
+		context->protocols_copy = NULL;
 
 		if (lws_fi(&context->fic, "ctx_createfail_sys_vh"))
 			vh = NULL;
@@ -1369,6 +1489,8 @@ lws_create_context(const struct lws_context_creation_info *info)
 			goto bail_libuv_aware;
 		}
 
+		context->protocols_copy = ccop;
+
 		context->vhost_system = vh;
 
 		if (lws_protocol_init_vhost(vh, NULL) ||
@@ -1378,11 +1500,8 @@ lws_create_context(const struct lws_context_creation_info *info)
 		}
 #if defined(LWS_WITH_SYS_ASYNC_DNS)
 		lws_async_dns_init(context);
-			//goto bail_libuv_aware;
 #endif
 	}
-
-#endif
 
 #if defined(LWS_WITH_SYS_STATE)
 	/*
@@ -1549,6 +1668,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 					strlen(context->pss_policies_json));
 		if ((n != LEJP_CONTINUE && n < 0) ||
 		    lws_fi(&context->fic, "ctx_createfail_ss_pol2")) {
+			lwsl_err("%s: policy_parse came back with %d\n", __func__, n);
 			lws_ss_policy_parse_abandon(context);
 			goto bail_libuv_aware;
 		}
@@ -1586,12 +1706,16 @@ lws_create_context(const struct lws_context_creation_info *info)
 	 * to listen on port < 1023 we would have needed root, but now we are
 	 * listening, we don't want the power for anything else
 	 */
-	if (!lws_check_opt(info->options, LWS_SERVER_OPTION_EXPLICIT_VHOSTS))
+	if (!lws_check_opt(info->options, LWS_SERVER_OPTION_EXPLICIT_VHOSTS)) {
+#if defined(LWS_WITH_SYS_STATE) && defined(LWS_WITH_NETWORK)
+		lws_state_transition(&context->mgr_system, LWS_SYSTATE_PRE_PRIV_DROP);
+#endif
 		if (lws_plat_drop_app_privileges(context, 1) ||
 		    lws_fi(&context->fic, "ctx_createfail_privdrop"))
 			goto bail_libuv_aware;
+	}
 
-#if defined(LWS_WITH_SYS_STATE)
+#if defined(LWS_WITH_SYS_STATE) && defined(LWS_WITH_NETWORK)
 	/*
 	 * We want to move on the syste, state as far as it can go towards
 	 * OPERATIONAL now.  But we have to return from here first so the user
@@ -1651,6 +1775,10 @@ free_context_fail2:
 #if defined(LWS_WITH_SYS_METRICS)
 		lws_metrics_destroy(context);
 #endif
+#if defined(LWS_WITH_SYS_STATE) && defined(LWS_WITH_NETWORK)
+		while (context->mgr_system.notify_list.head)
+			lws_dll2_remove(context->mgr_system.notify_list.head);
+#endif
 		lws_fi_destroy(&context->fic);
 	}
 	lws_fi_destroy(&info->fic);
@@ -1700,7 +1828,7 @@ lws_system_cpd_start_defer(struct lws_context *cx, lws_usec_t defer_us)
 			 lws_system_deferred_cb, defer_us);
 }
 
-#if (defined(LWS_WITH_SYS_STATE) && defined(LWS_WITH_SYS_SMD)) || !defined(LWS_WITH_NO_LOGS)
+#if (defined(LWS_WITH_SYS_STATE) && defined(LWS_WITH_SYS_SMD)) || (_LWS_ENABLED_LOGS & LLL_INFO)
 static const char *cname[] = { "Unknown", "OK", "Captive", "No internet" };
 #endif
 
@@ -1710,8 +1838,8 @@ lws_system_cpd_set(struct lws_context *cx, lws_cpd_result_t result)
 	if (cx->captive_portal_detect != LWS_CPD_UNKNOWN)
 		return;
 
-#if !defined(LWS_WITH_NO_LOGS)
-	lwsl_cx_notice(cx, "setting CPD result %s", cname[result]);
+#if (_LWS_ENABLED_LOGS & LLL_INFO)
+	lwsl_cx_info(cx, "setting CPD result %s", cname[result]);
 #endif
 
 	cx->captive_portal_detect = (uint8_t)result;
@@ -1777,10 +1905,11 @@ lws_pt_destroy(struct lws_context_per_thread *pt)
 #if defined(LWS_WITH_CGI)
 	lws_ctx_t ctx = pt->context;
 
-		if (lws_rops_fidx(&role_ops_cgi, LWS_ROPS_pt_init_destroy))
-			(lws_rops_func_fidx(&role_ops_cgi, LWS_ROPS_pt_init_destroy)).
-				pt_init_destroy(ctx, NULL, pt, 1);
+	if (lws_rops_fidx(&role_ops_cgi, LWS_ROPS_pt_init_destroy))
+		(lws_rops_func_fidx(&role_ops_cgi, LWS_ROPS_pt_init_destroy)).
+			pt_init_destroy(ctx, NULL, pt, 1);
 #endif
+
 	vpt = (volatile struct lws_context_per_thread *)pt;
 	ftp = vpt->foreign_pfd_list;
 	while (ftp) {
@@ -1792,19 +1921,34 @@ lws_pt_destroy(struct lws_context_per_thread *pt)
 
 	lws_pt_lock(pt, __func__);
 
+	lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1,
+			      lws_dll2_get_head(&pt->pre_natal_wsi_owner)) {
+		struct lws *wsi = lws_container_of(d, struct lws, pre_natal);
+
+		lwsl_wsi_info(wsi, "pt pre_natal cleanup");
+		__lws_free_wsi(wsi);
+
+	} lws_end_foreach_dll_safe(d, d1);
+
 	if (pt->pipe_wsi) {
 		lws_destroy_event_pipe(pt->pipe_wsi);
 		pt->pipe_wsi = NULL;
 	}
 
-	if (pt->dummy_pipe_fds[0]
+	if ((pt->dummy_pipe_fds[0] || pt->dummy_pipe_fds[1])
 #if !defined(WIN32)
-	    && (int)pt->dummy_pipe_fds[0] != -1
+	    && ((int)pt->dummy_pipe_fds[0] != -1 || (int)pt->dummy_pipe_fds[1] != -1)
 #endif
 	) {
+#if defined(__COVERITY__)
+		struct lws wsi = { 0 };
+#else
 		struct lws wsi;
 
-		memset(&wsi, 0, sizeof(wsi));
+#if !defined(__COVERITY__)
+		memset((void *)&wsi, 0, sizeof(wsi));
+#endif
+#endif
 		wsi.a.context = pt->context;
 		wsi.tsi = (char)pt->tid;
 		lws_plat_pipe_close(&wsi);
@@ -2135,13 +2279,12 @@ next:
 			for (nu = 0; nu < context->pl_hash_elements; nu++)	{
 				if (!context->pl_hash_table[nu])
 					continue;
-				lws_start_foreach_llp(struct lws_peer **, peer,
-						      context->pl_hash_table[nu]) {
+				struct lws_peer **peer = &context->pl_hash_table[nu];
+				while (*peer) {
 					struct lws_peer *df = *peer;
 					*peer = df->next;
 					lws_free(df);
-					continue;
-				} lws_end_foreach_llp(peer, next);
+				}
 			}
 		lws_free(context->pl_hash_table);
 #endif
@@ -2317,14 +2460,16 @@ next:
 		} lws_end_foreach_dll_safe(d, d1);
 #endif
 #endif
-
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL)
+		lws_free(context->stdin_linear);
+#endif
 		/*
 		 * Context lock is about to go away
 		 */
 
 		lws_context_unlock(context);
 
-#if LWS_MAX_SMP > 1
+#if defined(LWS_WITH_NETWORK) && LWS_MAX_SMP > 1
 		lws_mutex_refcount_destroy(&context->mr);
 #endif
 
@@ -2332,8 +2477,7 @@ next:
 		lws_metrics_destroy(context);
 #endif
 
-		if (context->external_baggage_free_on_destroy)
-			free(context->external_baggage_free_on_destroy);
+		free(context->external_baggage_free_on_destroy);
 
 #if defined(LWS_PLAT_FREERTOS)
 #if defined(LWS_AMAZON_RTOS)
@@ -2343,7 +2487,7 @@ next:
 #endif
 #endif
 
-#if defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
+#if defined(LWS_WITH_NETWORK) && defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
 		if (context->evlib_plugin_list)
 			lws_plugins_destroy(&context->evlib_plugin_list,
 					    NULL, NULL);
@@ -2351,6 +2495,24 @@ next:
 
 #if defined(LWS_WITH_SYS_FAULT_INJECTION)
 		lws_fi_destroy(&context->fic);
+#endif
+
+#if defined(LWS_WITH_ASYNC_QUEUE)
+		/* Ensure no threads are running before destroying */
+		pthread_mutex_lock(&context->async_worker_mutex);
+		pthread_cond_broadcast(&context->async_worker_cond);
+		pthread_mutex_unlock(&context->async_worker_mutex);
+
+		while (context->async_worker_threads_active > 0)
+			usleep(1000);
+
+		pthread_mutex_destroy(&context->async_worker_mutex);
+		pthread_cond_destroy(&context->async_worker_cond);
+#endif
+
+#if defined(LWS_WITH_SYS_STATE) && defined(LWS_WITH_NETWORK)
+		while (context->mgr_system.notify_list.head)
+			lws_dll2_remove(context->mgr_system.notify_list.head);
 #endif
 
 		lwsl_refcount_cx(context->log_cx, -1);

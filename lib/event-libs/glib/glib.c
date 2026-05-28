@@ -491,6 +491,7 @@ static const struct lws_event_loop_ops event_loop_ops_glib = {
 	/* destroy_pt */		elops_destroy_pt_glib,
 	/* destroy wsi */		elops_destroy_wsi_glib,
 	/* foreign_thread */		NULL,
+	/* fake_POLLIN */		NULL,
 
 	/* flags */			LELOF_DESTROY_FINAL,
 
@@ -505,10 +506,10 @@ LWS_VISIBLE
 #endif
 const lws_plugin_evlib_t evlib_glib = {
 	.hdr = {
-		"glib event loop",
-		"lws_evlib_plugin",
-		LWS_BUILD_HASH,
-		LWS_PLUGIN_API_MAGIC
+		.name = "glib event loop",
+		._class = "lws_evlib_plugin",
+		.lws_build_hash = LWS_BUILD_HASH,
+		.api_magic = LWS_PLUGIN_API_MAGIC
 	},
 
 	.ops	= &event_loop_ops_glib

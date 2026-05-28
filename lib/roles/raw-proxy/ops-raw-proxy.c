@@ -24,10 +24,13 @@
 
 #include <private-lib-core.h>
 
-static int
+static lws_handling_result_t
 rops_handle_POLLIN_raw_proxy(struct lws_context_per_thread *pt, struct lws *wsi,
 			     struct lws_pollfd *pollfd)
 {
+#if defined(LWS_WITH_LATENCY)
+	lws_usec_t _rproxy_start = lws_now_usecs();
+#endif
 	struct lws_tokens ebuf;
 	int n, buffered;
 
@@ -80,7 +83,8 @@ rops_handle_POLLIN_raw_proxy(struct lws_context_per_thread *pt, struct lws *wsi,
 
 		case LWS_SSL_CAPABLE_ERROR:
 			goto fail;
-		case LWS_SSL_CAPABLE_MORE_SERVICE:
+		case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
+		case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
 			goto try_pollout;
 		}
 		n = user_callback_handle_rxflow(wsi->a.protocol->callback,
@@ -116,6 +120,14 @@ try_pollout:
 #if defined(LWS_WITH_CLIENT)
 	if (lws_http_client_socket_service(wsi, pollfd))
 		return LWS_HPI_RET_WSI_ALREADY_DIED;
+#endif
+
+#if defined(LWS_WITH_LATENCY)
+		{
+			unsigned int ms = (unsigned int)((lws_now_usecs() - _rproxy_start) / 1000);
+			if (ms > 2)
+				lws_latency_note(pt, _rproxy_start, 2000, "rproxy:%dms", ms);
+		}
 #endif
 
 	return LWS_HPI_RET_HANDLED;
@@ -182,7 +194,7 @@ rops_client_bind_raw_proxy(struct lws *wsi,
 	return 0;
 }
 
-static int
+static lws_handling_result_t
 rops_handle_POLLOUT_raw_proxy(struct lws *wsi)
 {
 	if (lwsi_state(wsi) == LRS_ESTABLISHED)

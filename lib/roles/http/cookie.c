@@ -59,6 +59,27 @@ struct lws_cookie {
 	unsigned int httponly:1;
 };
 
+static size_t
+lws_cookie_domain_len(const char *domain)
+{
+	const char *p;
+
+	if (!domain)
+		return 0;
+
+	if (domain[0] == '[') {
+		p = (char *)strchr(domain, ']');
+		if (p && p[1] == ':')
+			return lws_ptr_diff_size_t((p + 1), domain);
+	} else {
+		p = (char *)strchr(domain, ':');
+		if (p)
+			return lws_ptr_diff_size_t(p, domain);
+	}
+
+	return strlen(domain);
+}
+
 static int
 lws_cookie_parse_date(const char *d, size_t len, time_t *t)
 {
@@ -160,11 +181,13 @@ lws_cookie_rm_sws(const char **buf_p, size_t *len_p)
 
 	buf = *buf_p;
 	len = *len_p;
+
 	while (buf[0] == ' ' && len > 0) {
 		buf++;
 		len--;
 	}
-	while (buf[len - 1] == ' ' && len > 0)
+
+	while (len && buf[len - 1] == ' ')
 		len--;
 
 	*buf_p = buf;
@@ -280,14 +303,17 @@ lws_cookie_parse_nsc(struct lws_cookie *c, const char *b, size_t l)
 static int
 lws_cookie_write_nsc(struct lws *wsi, struct lws_cookie *c)
 {
-	char cache_name[LWS_COOKIE_MAX_CACHE_NAME_LEN];
 	const char *ads, *path;
 	struct lws_cache_ttl_lru *l1;
 	struct client_info_stash *stash;
-	char *cookie_string = NULL, *dl;
+	char *cookie_string = NULL, *cache_name = NULL;
+	const char *dl;
 	 /* 6 tabs + 20 for max time_t + 2 * TRUE/FALSE + null */
-	size_t size = 6 + 20 + 10 + 1;
+	size_t size = 6 + 20 + 10 + 1, cnl;
 	time_t expires = 0;
+	lws_usec_t expiry_us = 0;
+	time_t now_s = time(NULL);
+
 	int ret = 0;
 
 	if (!wsi || !c)
@@ -299,10 +325,12 @@ lws_cookie_write_nsc(struct lws *wsi, struct lws_cookie *c)
 
 	stash = wsi->stash ? wsi->stash : lws_get_network_wsi(wsi)->stash;
 	if (stash) {
-		ads = stash->cis[CIS_ADDRESS];
+		ads = stash->cis[CIS_HOST] ? stash->cis[CIS_HOST] : stash->cis[CIS_ADDRESS];
 		path = stash->cis[CIS_PATH];
 	} else {
-		ads = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_PEER_ADDRESS);
+		ads = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_HOST);
+		if (!ads)
+			ads = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_PEER_ADDRESS);
 		path = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_URI);
 	}
 	if (!ads || !path)
@@ -314,38 +342,58 @@ lws_cookie_write_nsc(struct lws *wsi, struct lws_cookie *c)
 		return -1;
 	}
 
-	if (!c->f[CE_EXPIRES]) {
-		/*
-		 * Currently we just take the approach to reject session cookies
-		 */
-		lwsl_warn("%s: reject session cookies\n", __func__);
 
-		return 0;
-	}
 
 	if (!c->f[CE_DOMAIN]) {
 		c->f[CE_HOSTONLY] = "T";
 		c->l[CE_HOSTONLY] = 1;
 		c->f[CE_DOMAIN] = ads;
-		c->l[CE_DOMAIN] = strlen(ads);
+		c->l[CE_DOMAIN] = lws_cookie_domain_len(ads);
 	}
 
 	if (!c->f[CE_PATH]) {
 		c->f[CE_PATH] = path;
 		c->l[CE_PATH] = strlen(path);
-		dl = memchr(c->f[CE_PATH], '?', c->l[CE_PATH]);
+		dl = (char *)memchr(c->f[CE_PATH], '?', c->l[CE_PATH]);
 		if (dl)
 			c->l[CE_PATH] = (size_t)(dl - c->f[CE_PATH]);
 	}
 
-	if (lws_cookie_compile_cache_name(cache_name, sizeof(cache_name), c))
+	cnl = c->l[CE_DOMAIN] + c->l[CE_PATH] + c->l[CE_NAME] + 6;
+	cache_name = lws_malloc(cnl, __func__);
+	if (!cache_name)
 		return -1;
+
+	if (lws_cookie_compile_cache_name(cache_name, cnl, c)) {
+		ret = -1;
+		goto exit;
+	}
 
 	if (c->f[CE_EXPIRES] &&
 	    lws_cookie_parse_date(c->f[CE_EXPIRES], c->l[CE_EXPIRES], &expires)) {
 		lwsl_err("%s: can't parse date %.*s\n", __func__,
 			 (int)c->l[CE_EXPIRES], c->f[CE_EXPIRES]);
 		return -1;
+	}
+
+	if (c->f[CE_EXPIRES])
+		lwsl_cookie("%s: name=%s expires='%.*s'@ t=%lld now=%lld\n", __func__, cache_name,
+			    (int)c->l[CE_EXPIRES], c->f[CE_EXPIRES],
+			    (long long)expires, (long long)now_s);
+	else
+		lwsl_cookie("%s: name=%s expires='<unset>'@ t=%lld now=%lld\n", __func__, cache_name,
+			    (long long)expires, (long long)now_s);
+
+	/*
+	 * RFC 6265 treats a past-dated Expires as a delete signal for the
+	 * cookie. Ensure we handle expires=0 (PARSED at actual UNIX epoch, t=0)
+	 * as a delete signal as well.
+	 */
+	if (c->f[CE_EXPIRES] && (expires <= now_s)) {
+		lwsl_cookie("%s: dropping already-expired cookie\n", __func__);
+		(void)lws_cache_item_remove(l1, cache_name);
+		ret = 0;
+		goto exit;
 	}
 
 	size += c->l[CE_NAME] + c->l[CE_VALUE] + c->l[CE_DOMAIN] + c->l[CE_PATH];
@@ -368,11 +416,20 @@ lws_cookie_write_nsc(struct lws *wsi, struct lws_cookie *c)
 	lwsl_cookie("%s: name %s\n", __func__, cache_name);
 	lwsl_cookie("%s: c %s\n", __func__, cookie_string);
 
+	/*
+	 * Convert expiry in UNIX time to lws_usec_t (monotonic clock).
+	 * expires == 0 is a session cookie (no expiry).
+	 */
+	if (expires) {
+		expiry_us = lws_now_usecs() +
+				(lws_usec_t)(expires - now_s) *
+				(lws_usec_t)LWS_US_PER_SEC;
+	}
+
 	if (lws_cache_write_through(l1, cache_name,
-				    (const uint8_t *)cookie_string,
-				    strlen(cookie_string),
-				    (lws_usec_t)((unsigned long long)expires *
-					   (lws_usec_t)LWS_US_PER_SEC), NULL)) {
+					(const uint8_t *)cookie_string,
+					strlen(cookie_string),
+					expiry_us, NULL)) {
 		ret = -1;
 		goto exit;
 	}
@@ -395,6 +452,7 @@ lws_cookie_write_nsc(struct lws *wsi, struct lws_cookie *c)
 
 exit:
 	lws_free(cookie_string);
+	lws_free(cache_name);
 
 	return ret;
 }
@@ -403,20 +461,19 @@ static int
 lws_cookie_attach_cookies(struct lws *wsi, char *buf, char *end)
 {
 	const char *domain, *path, *dl_domain, *dl_path, *po;
-	char cache_name[LWS_COOKIE_MAX_CACHE_NAME_LEN];
-	size_t domain_len, path_len, size, ret = 0;
+	size_t domain_len, path_len, size, cnl, ret = 0;
 	struct lws_cache_ttl_lru *l1;
 	struct client_info_stash *stash;
 	lws_cache_results_t cr;
 	struct lws_cookie c;
 	int hostdomain = 1;
-	char *p, *p1;
+	char *p, *p1, *cache_name;
 
 	if (!wsi)
 		return -1;
 
 	stash = wsi->stash ? wsi->stash : lws_get_network_wsi(wsi)->stash;
-	if (!stash || !stash->cis[CIS_ADDRESS] ||
+	if (!stash || (!stash->cis[CIS_HOST] && !stash->cis[CIS_ADDRESS]) ||
 			   !stash->cis[CIS_PATH])
 		return -1;
 
@@ -428,7 +485,7 @@ lws_cookie_attach_cookies(struct lws *wsi, char *buf, char *end)
 
 	memset(&c, 0, sizeof(c));
 
-	domain = stash->cis[CIS_ADDRESS];
+	domain = stash->cis[CIS_HOST] ? stash->cis[CIS_HOST] : stash->cis[CIS_ADDRESS];
 	path = stash->cis[CIS_PATH];
 
 	if (!domain || !path)
@@ -437,7 +494,7 @@ lws_cookie_attach_cookies(struct lws *wsi, char *buf, char *end)
 	path_len = strlen(path);
 
 	/* remove query string if exist */
-	dl_path = memchr(path, '?', path_len);
+	dl_path = (char *)memchr(path, '?', path_len);
 	if (dl_path)
 		path_len = lws_ptr_diff_size_t(dl_path,  path);
 
@@ -459,13 +516,15 @@ lws_cookie_attach_cookies(struct lws *wsi, char *buf, char *end)
 	/* iterate through domain and path levels to find matching cookies */
 	dl_domain = domain;
 	while (dl_domain) {
-		domain_len = strlen(domain);
-		dl_domain = memchr(domain, '.', domain_len);
+		domain_len = lws_cookie_domain_len(domain);
+		dl_domain = (char *)memchr(domain, '.', domain_len);
 		/* don't match top level domain */
 		if (!dl_domain)
 			break;
 
-		if (domain_len + path_len + 6 > sizeof(cache_name))
+		cnl = domain_len + path_len + 6;
+		cache_name = lws_malloc(cnl, __func__);
+		if (!cache_name)
 			return -1;
 
 		/* compile key string "[domain]|[path]|*"" */
@@ -528,6 +587,8 @@ lws_cookie_attach_cookies(struct lws *wsi, char *buf, char *end)
 			}
 		}
 
+		lws_free(cache_name);
+
 		domain = dl_domain + 1;
 		hostdomain = 0;
 	}
@@ -585,7 +646,7 @@ lws_parse_set_cookie(struct lws *wsi)
 
 		do {
 			tk_head = buf_head;
-			tk_end = memchr(buf_head, ';',
+			tk_end = (char *)memchr(buf_head, ';',
 					(size_t)(buf_end - buf_head + 1));
 			if (!tk_end) {
 				tk_end = buf_end;
@@ -593,6 +654,12 @@ lws_parse_set_cookie(struct lws *wsi)
 			} else {
 				buf_head = tk_end + 1;
 				tk_end--;
+			}
+
+			if (tk_end < tk_head) {
+				if (!c.f[CE_NAME])
+					return -1;
+				continue;
 			}
 
 			if (c.f[CE_NAME])
@@ -603,8 +670,8 @@ lws_parse_set_cookie(struct lws *wsi)
 			 * WS and DQ for value
 			 */
 
-			dl = memchr(tk_head, '=', lws_ptr_diff_size_t(tk_end,
-							tk_head + 1));
+			dl = (char *)memchr(tk_head, '=',
+				    lws_ptr_diff_size_t(tk_end, tk_head) + 1);
 			if (!dl || dl == tk_head)
 				return -1;
 

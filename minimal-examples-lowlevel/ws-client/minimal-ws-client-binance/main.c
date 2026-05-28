@@ -84,7 +84,7 @@ static const lws_retry_bo_t retry = {
 	.conceal_count			= LWS_ARRAY_SIZE(backoff_ms),
 
 	.secs_since_valid_ping		= 400,  /* force PINGs after secs idle */
-	.secs_since_valid_hangup	= 400, /* hangup after secs idle */
+	.secs_since_valid_hangup	= 410, /* hangup after secs idle */
 
 	.jitter_percent			= 0,
 };
@@ -208,7 +208,7 @@ pennies(const char *s)
 {
 	uint64_t price = (uint64_t)atoll(s) * 100;
 
-	s = strchr(s, '.');
+	s = (char *)strchr(s, '.');
 
 	if (s && isdigit(s[1]) && isdigit(s[2]))
 		price = price + (uint64_t)((10 * (s[1] - '0')) + (s[2] - '0'));

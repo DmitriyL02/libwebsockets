@@ -31,7 +31,7 @@ lws_set_proxy(struct lws_vhost *vhost, const char *proxy)
 {
 	char authstring[96];
 	int brackets = 0;
-	char *p;
+	const char *p;
 
 	if (!proxy)
 		return -1;
@@ -40,7 +40,7 @@ lws_set_proxy(struct lws_vhost *vhost, const char *proxy)
 	if (!strncmp(proxy, "http://", 7))
 		proxy += 7;
 
-	p = strrchr(proxy, '@');
+	p = (char *)strrchr(proxy, '@');
 	if (p) { /* auth is around */
 
 		if (lws_ptr_diff_size_t(p, proxy) > sizeof(authstring) - 1)
@@ -84,26 +84,27 @@ lws_set_proxy(struct lws_vhost *vhost, const char *proxy)
 
 #if defined(LWS_WITH_IPV6)
 	if (brackets) {
+		char *ncp;
+
 		/* original is IPv6 format "[::1]:443" */
 
-		p = strchr(vhost->http.http_proxy_address, ']');
-		if (!p) {
+		ncp = (char *)strchr(vhost->http.http_proxy_address, ']');
+		if (!ncp) {
 			lwsl_vhost_err(vhost, "malformed proxy '%s'", proxy);
 
 			return -1;
 		}
-		*p++ = '\0';
+		*ncp++ = '\0';
 	}
 #endif
 
-	p = strchr(p, ':');
+	p = (char *)strchr(p, ':');
 	if (!p && !vhost->http.http_proxy_port) {
 		lwsl_vhost_err(vhost, "http_proxy needs to be ads:port");
 
 		return -1;
 	}
 	if (p) {
-		*p = '\0';
 		vhost->http.http_proxy_port = (unsigned int)atoi(p + 1);
 	}
 

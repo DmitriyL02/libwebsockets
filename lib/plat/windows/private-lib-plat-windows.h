@@ -70,14 +70,12 @@
 
 #if defined(LWS_WITH_TLS)
 #include <wincrypt.h>
+#if defined(LWS_WITH_BORINGSSL)
+  /* Undefine wincrypt.h symbols that conflict with BoringSSL */
+  #undef X509_NAME
+  #undef X509_EXTENSIONS
+  #undef PKCS7_SIGNER_INFO
 #endif
-
-#if defined(LWS_HAVE_PTHREAD_H)
-#define lws_mutex_t		pthread_mutex_t
-#define lws_mutex_init(x)	pthread_mutex_init(&(x), NULL)
-#define lws_mutex_destroy(x)	pthread_mutex_destroy(&(x))
-#define lws_mutex_lock(x)	pthread_mutex_lock(&(x))
-#define lws_mutex_unlock(x)	pthread_mutex_unlock(&(x))
 #endif
 
  #if !defined(LWS_HAVE_ATOLL)

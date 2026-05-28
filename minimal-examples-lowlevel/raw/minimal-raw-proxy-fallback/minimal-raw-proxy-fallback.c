@@ -19,37 +19,42 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_D,
+	LWS_SW_H,
+	LWS_SW_R,
+	LWS_SW_S,
+	LWS_SW_U,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_H]	= { "-h",              "Strict Host Check / Help" },
+	[LWS_SW_R]	= { "-r",              "Enable -r feature" },
+	[LWS_SW_S]	= { "-s",              "Use TLS / https" },
+	[LWS_SW_U]	= { "-u",              "URL to connect to" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 #include <sys/types.h>
 
-#define LWS_PLUGIN_STATIC
-#include "../plugins/raw-proxy/protocol_lws_raw_proxy.c"
-
-static struct lws_protocols protocols[] = {
-	LWS_PLUGIN_PROTOCOL_RAW_PROXY,
-	LWS_PROTOCOL_LIST_TERM
+#if defined(LWS_WITH_PLUGINS)
+static const char * const plugin_dirs[] = {
+	LWS_PLUGIN_DIR "/",
+	NULL
 };
+#endif
 
 static const struct lws_http_mount mount = {
-	/* .mount_next */		NULL,		/* linked-list "next" */
-	/* .mountpoint */		"/",		/* mountpoint URL */
-	/* .origin */			"./mount-origin", /* serve from dir */
-	/* .def */			"index.html",	/* default filename */
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
-	/* .mountpoint_len */		1,		/* char count */
-	/* .basic_auth_login_file */	NULL,
+	.mountpoint		= "/",			/* mountpoint URL */
+	.origin			= "./mount-origin",	/* serve from dir */
+	.def			= "index.html",		/* default filename */
+	.origin_protocol	= LWSMPRO_FILE,		/* files in a dir */
+	.mountpoint_len		= 1,			/* char count */
 };
 
 static int interrupted;
@@ -81,25 +86,34 @@ int main(int argc, const char **argv)
 	struct lws_context *context;
 	char outward[256];
 	const char *p;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	signal(SIGINT, sigint_handler);
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
 	lwsl_user("LWS minimal raw proxy fallback | visit http://localhost:7681\n");
 
-	if ((p = lws_cmdline_option(argc, argv, "-r"))) {
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_R].sw))) {
 		lws_strncpy(outward, p, sizeof(outward));
 		pvo1.value = outward;
 	}
 
 	memset(&info, 0, sizeof info); /* otherwise uninitialized garbage */
 	info.port = 7681;
-	info.protocols = protocols;
 	info.pvo = &pvo;
 	info.mounts = &mount;
+#if defined(LWS_WITH_PLUGINS)
+	info.plugin_dirs = plugin_dirs;
+#endif
 	info.error_document_404 = "/404.html";
 	info.options =
 		LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE |
@@ -108,16 +122,16 @@ int main(int argc, const char **argv)
 	info.listen_accept_protocol = "raw-proxy";
 
 #if defined(LWS_WITH_TLS)
-	if (lws_cmdline_option(argc, argv, "-s")) {
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_S].sw)) {
 		info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT |
 				LWS_SERVER_OPTION_ALLOW_NON_SSL_ON_SSL_PORT;
 		info.ssl_cert_filepath = "localhost-100y.cert";
 		info.ssl_private_key_filepath = "localhost-100y.key";
 
-		if (lws_cmdline_option(argc, argv, "-u"))
+		if (lws_cmdline_option(argc, argv, switches[LWS_SW_U].sw))
 			info.options |= LWS_SERVER_OPTION_REDIRECT_HTTP_TO_HTTPS;
 
-		if (lws_cmdline_option(argc, argv, "-h"))
+		if (lws_cmdline_option(argc, argv, switches[LWS_SW_H].sw))
 			info.options |= LWS_SERVER_OPTION_ALLOW_HTTP_ON_HTTPS_LISTENER;
 	}
 #endif
@@ -125,6 +139,11 @@ int main(int argc, const char **argv)
 	context = lws_create_context(&info);
 	if (!context) {
 		lwsl_err("lws init failed\n");
+		return 1;
+	}
+
+	if (!lws_vhost_name_to_protocol(lws_get_vhost_by_name(context, "default"), "raw-proxy")) {
+		lwsl_err("raw-proxy plugin required\n");
 		return 1;
 	}
 

@@ -24,6 +24,9 @@
  * lws display_list and display_list objects (dlo)
  */
 
+#if !defined(__LWS_DLO_H__)
+#define __LWS_DLO_H__
+
 #include <stdint.h>
 
 struct lws_display_render_state;
@@ -130,6 +133,8 @@ typedef struct lws_dlo {
 
 	lws_box_t			box;
 	lws_display_colour_t		dc;
+
+	uint8_t				budget; /* limit spinning */
 
 	uint8_t				flag_runon:1; /* continues same line */
 	uint8_t				flag_done_align:1;
@@ -243,12 +248,14 @@ typedef struct lws_dlo_rasterize {
 typedef struct lws_dlo_png {
 	lws_dlo_t			dlo;  /* ordering: first */
 	lws_flow_t			flow; /* ordering: second */
+	char				name[25];
 	lws_upng_t			*png;
 } lws_dlo_png_t;
 
 typedef struct lws_dlo_jpeg {
 	lws_dlo_t			dlo;  /* ordering: first */
 	lws_flow_t			flow; /* ordering: second */
+	char				name[25];
 	lws_jpeg_t			*j;
 } lws_dlo_jpeg_t;
 
@@ -266,8 +273,6 @@ typedef struct {
 	lws_dlo_image_type_t		type;
 	char				failed;
 } lws_dlo_image_t;
-
-typedef struct lws_display_state lws_display_state_t;
 
 typedef struct lws_displaylist {
 	lws_dll2_owner_t		dl;
@@ -287,13 +292,17 @@ typedef struct lws_display_render_stack {
 
 typedef struct lws_display_render_state {
 	lws_sorted_usec_list_t		sul; /* return to event loop statefully */
-	lws_display_state_t		*lds; /* optional, if using lws_display */
+	struct lws_display_state	*lds; /* optional, if using lws_display */
 
 	lws_dll2_owner_t		ids;
 
 	const struct lws_surface_info	*ic; /* display dimensions, palette */
 
-	lws_display_render_stack_t	st[12]; /* DLO child stack */
+#if defined(LWS_ESP_PLATFORM)
+	lws_display_render_stack_t	st[16]; /* DLO child stack */
+#else
+	lws_display_render_stack_t	st[64]; /* DLO child stack */
+#endif
 	int				sp;	/* DLO child stack level */
 
 	uint8_t				*line; /* Y or RGB line comp buffer */
@@ -345,12 +354,13 @@ lws_display_dl_dump(lws_displaylist_t *dl);
 /**
  * lws_display_list_destroy() - destroys display list and objects on it
  *
+ * \param cx: lws_context
  * \param dl: Pointer to the display list
  *
  * Destroys every DLO on the list.
  */
 LWS_VISIBLE LWS_EXTERN void
-lws_display_list_destroy(lws_displaylist_t *dl);
+lws_display_list_destroy(struct lws_context *cx, lws_displaylist_t *dl);
 
 LWS_VISIBLE LWS_EXTERN void
 lws_display_dlo_destroy(lws_dlo_t **r);
@@ -408,7 +418,7 @@ lws_display_dlo_text_destroy(struct lws_dlo *dlo);
 
 LWS_VISIBLE LWS_EXTERN lws_dlo_png_t *
 lws_display_dlo_png_new(lws_displaylist_t *dl, lws_dlo_t *dlo_parent,
-			lws_box_t *box);
+			lws_box_t *box, const char *name, size_t len);
 
 LWS_VISIBLE LWS_EXTERN lws_stateful_ret_t
 lws_display_render_png(struct lws_display_render_state *rs);
@@ -425,7 +435,7 @@ lws_display_dlo_png_destroy(struct lws_dlo *dlo);
 
 LWS_VISIBLE LWS_EXTERN lws_dlo_jpeg_t *
 lws_display_dlo_jpeg_new(lws_displaylist_t *dl, lws_dlo_t *dlo_parent,
-			 lws_box_t *box);
+			 lws_box_t *box, const char *name, size_t len);
 
 LWS_VISIBLE LWS_EXTERN lws_stateful_ret_t
 lws_display_render_jpeg(struct lws_display_render_state *rs);
@@ -460,13 +470,11 @@ typedef struct {
 LWS_VISIBLE LWS_EXTERN int
 lws_dlo_ss_create(lws_dlo_ss_create_info_t *i, lws_dlo_t **pdlo);
 
-typedef struct lhp_ctx lhp_ctx_t;
-
 LWS_VISIBLE LWS_EXTERN int
 lws_dlo_ss_find(struct lws_context *cx, const char *url, lws_dlo_image_t *u);
 
 LWS_VISIBLE LWS_EXTERN lws_stateful_ret_t
-lhp_displaylist_layout(lhp_ctx_t *ctx, char reason);
+lhp_displaylist_layout(struct lhp_ctx *ctx, char reason);
 
 #define lws_dlo_image_width(_u) ((_u)->failed ? -1 : \
 		((_u)->type == LWSDLOSS_TYPE_JPEG ? \
@@ -521,4 +529,5 @@ lws_dlo_file_choose(struct lws_context *cx, const char *name);
 LWS_VISIBLE LWS_EXTERN void
 lws_dlo_file_destroy(struct lws_context *cx);
 
-LWS_VISIBLE extern const struct lws_plat_file_ops lws_dlo_fops;
+LWS_VISIBLE LWS_EXTERN_FOR_DATA const struct lws_plat_file_ops lws_dlo_fops;
+#endif

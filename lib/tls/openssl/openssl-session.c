@@ -73,7 +73,7 @@ __lws_tls_session_lookup_by_name(struct lws_vhost *vh, const char *name)
  * If possible, reuse an existing, cached session
  */
 
-void
+int
 lws_tls_reuse_session(struct lws *wsi)
 {
 	char tag[LWS_SESSION_TAG_LEN];
@@ -81,7 +81,7 @@ lws_tls_reuse_session(struct lws *wsi)
 
 	if (!wsi->a.vhost ||
 	    wsi->a.vhost->options & LWS_SERVER_OPTION_DISABLE_TLS_SESSION_CACHE)
-		return;
+		return 0;
 
 	lws_context_lock(wsi->a.context, __func__); /* -------------- cx { */
 	lws_vhost_lock(wsi->a.vhost); /* -------------- vh { */
@@ -105,7 +105,7 @@ lws_tls_reuse_session(struct lws *wsi)
 #if !defined(USE_WOLFSSL)
 	/* extend session lifetime */
 	SSL_SESSION_set_time(ts->session,
-#if defined(OPENSSL_IS_BORINGSSL)
+#if defined(OPENSSL_IS_BORINGSSL) || defined(OPENSSL_IS_AWSLC)
 			(unsigned long)
 #else
 			(long)
@@ -118,9 +118,15 @@ lws_tls_reuse_session(struct lws *wsi)
 	lws_dll2_remove(&ts->list);
 	lws_dll2_add_tail(&ts->list, &wsi->a.vhost->tls_sessions);
 
+	lws_vhost_unlock(wsi->a.vhost); /* } vh --------------  */
+	lws_context_unlock(wsi->a.context); /* } cx --------------  */
+
+	return 1;
+
 bail:
 	lws_vhost_unlock(wsi->a.vhost); /* } vh --------------  */
 	lws_context_unlock(wsi->a.context); /* } cx --------------  */
+	return 0;
 }
 
 int
@@ -356,7 +362,7 @@ lws_tls_session_cache(struct lws_vhost *vh, uint32_t ttl)
 	if (!ttl)
 		return;
 
-#if defined(OPENSSL_IS_BORINGSSL)
+#if defined(OPENSSL_IS_BORINGSSL) || defined(OPENSSL_IS_AWSLC)
 	SSL_CTX_set_timeout(vh->tls.ssl_client_ctx, ttl);
 #else
 	SSL_CTX_set_timeout(vh->tls.ssl_client_ctx, (long)ttl);

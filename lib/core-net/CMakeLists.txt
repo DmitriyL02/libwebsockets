@@ -36,8 +36,35 @@ list(APPEND SOURCES
 	core-net/wsi.c
 	core-net/wsi-timeout.c
 	core-net/adopt.c
+	core-net/txpacer.c
 	roles/pipe/ops-pipe.c
 )
+
+if (LWS_WITH_LATENCY)
+	list(APPEND SOURCES
+		core-net/latency.c
+	)
+endif()
+
+if (LWS_WITH_STUB AND NOT LWS_WITHOUT_CLIENT)
+	list(APPEND SOURCES
+		core-net/stub.c
+	)
+endif()
+
+if (NOT LWS_WITHOUT_CLIENT)
+	list(APPEND SOURCES
+		core-net/async-ipc.c
+	)
+endif()
+
+
+if (LWS_WITH_TRANSPORT_SEQUENCER)
+	list(APPEND SOURCES
+		core-net/lws-transport-sequencer.c
+	)
+endif()
+
 
 if (LWS_WITH_SYS_STATE)
 	list(APPEND SOURCES
@@ -54,6 +81,11 @@ endif()
 if (LWS_WITH_LWS_DSH)
 	list(APPEND SOURCES
 		core-net/lws-dsh.c)
+endif()
+
+if (LWS_WITH_WOL)
+	list(APPEND SOURCES
+		core-net/wol.c)
 endif()
 
 if (LWS_WITH_CLIENT)
@@ -75,6 +107,14 @@ endif()
 if (LWS_WITH_SOCKS5 AND NOT LWS_WITHOUT_CLIENT)
 	list(APPEND SOURCES
 		core-net/socks5-client.c)
+endif()
+
+if (LWS_WITH_WEBRTC)
+	list(APPEND SOURCES
+		core-net/lws-rtp.c
+		core-net/lws-srtp.c
+		core-net/lws-stun.c
+	)
 endif()
 
 exports_to_parent_scope()

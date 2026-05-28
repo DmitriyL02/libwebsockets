@@ -263,7 +263,7 @@ int lws_open(const char *__file, int __oflag, ...)
 int
 lws_pthread_self_to_tsi(struct lws_context *context)
 {
-#if LWS_MAX_SMP > 1
+#if defined(LWS_WITH_NETWORK) && LWS_MAX_SMP > 1
 	pthread_t ps = pthread_self();
 	struct lws_context_per_thread *pt = &context->pt[0];
 	int n;
@@ -416,10 +416,11 @@ lws_check_utf8(unsigned char *state, unsigned char *buf, size_t len)
 char *
 lws_strdup(const char *s)
 {
-	char *d = lws_malloc(strlen(s) + 1, "strdup");
+	size_t l = strlen(s) + 1;
+	char *d = lws_malloc(l, "strdup");
 
 	if (d)
-		strcpy(d, s);
+		memcpy(d, s, l);
 
 	return d;
 }
@@ -763,6 +764,12 @@ lws_urldecode(char *string, const char *escaped, int len)
  *   ../b.html            -> https://x.com/b.html
  *   /c.html              -> https://x.com/c.html
  *   https://y.com/a.html -> https://y.com/a.html
+ *
+ * If base is file:///path/to/origin/basis
+ *
+ *   a.html               -> file:///path/to/origin/basis/a.html
+ *   ../b.html            -> file:///path/to/origin/basis/../b.html
+ *   /c.html              -> file:///path/to/origin/basis/c.html
  */
 
 int
@@ -773,11 +780,32 @@ lws_http_rel_to_url(char *dest, size_t len, const char *base, const char *rel)
 
 	// lwsl_err("%s: base %s, rel %s\n", __func__, base, rel);
 
+	if (rel[0] == '/' && rel[1] == '/') {
+		lws_snprintf(dest, len, "https:%s", rel);
+
+		return 0;
+	}
+
 	if (!strncmp(rel, "https://", 8) ||
 	    !strncmp(rel, "http://", 7) ||
 	    !strncmp(rel, "file://", 7)) {
 		/* rel is already a full url, just copy it */
 		lws_strncpy(dest, rel, len);
+		return 0;
+	}
+
+	if (!strncmp(base, "file://", 7)) {
+		n = strlen(base);
+		while (n > 7) {
+			if (base[n - 1] == '/' && base[n - 2] != '/') {
+				n--;
+				break;
+			}
+			n--;
+		}
+		if (*rel == '/')
+			rel++;
+		lws_snprintf(dest, len, "%.*s/%s", (int)n, base, rel);
 		return 0;
 	}
 
@@ -843,11 +871,17 @@ lws_http_rel_to_url(char *dest, size_t len, const char *base, const char *rel)
 }
 
 int
-lws_finalize_startup(struct lws_context *context)
+lws_finalize_startup(struct lws_context *context, const char *where)
 {
-	if (lws_check_opt(context->options, LWS_SERVER_OPTION_EXPLICIT_VHOSTS))
+	if (lws_check_opt(context->options, LWS_SERVER_OPTION_EXPLICIT_VHOSTS)) {
+		lwsl_info("%s: dropping app privs: %s\n", __func__, where);
+#if defined(LWS_WITH_SYS_STATE) && defined(LWS_WITH_NETWORK)
+		lws_state_transition(&context->mgr_system, LWS_SYSTATE_PRE_PRIV_DROP);
+#endif
+
 		if (lws_plat_drop_app_privileges(context, 1))
 			return 1;
+	}
 
 	return 0;
 }
@@ -867,7 +901,7 @@ lws_snprintf(char *str, size_t size, const char *format, ...)
 	va_list ap;
 	int n;
 
-	if (!size)
+	if (!str || !size)
 		return 0;
 
 	va_start(ap, format);
@@ -906,7 +940,7 @@ lws_tokenize(struct lws_tokenize *ts)
 {
 	const char *rfc7230_delims = "(),/:;<=>?@[\\]{}";
 	char c, flo = 0, d_minus = '-', d_dot = '.', d_star = '*', s_minus = '\0',
-	     s_dot = '\0', s_star = '\0', d_eq = '=', s_eq = '\0', skipping = 0;
+	     s_dot = '\0', s_star = '\0', d_eq = '=', s_eq = '\0', d_plus = '+', s_plus = '\0', skipping = 0;
 	signed char num = (ts->flags & LWS_TOKENIZE_F_NO_INTEGERS) ? 0 : -1;
 	int utf8 = 0;
 
@@ -928,6 +962,10 @@ lws_tokenize(struct lws_tokenize *ts)
 		d_eq = '\0';
 		s_eq = '=';
 	}
+	if (ts->flags & LWS_TOKENIZE_F_PLUS_NONTERM) {
+		d_plus = '\0';
+		s_plus = '+';
+	}
 
 	if (!ts->dry)
 		ts->token = ts->collect;
@@ -938,6 +976,8 @@ lws_tokenize(struct lws_tokenize *ts)
 		ts->state = LWS_TOKZS_LEADING_WHITESPACE;
 		ts->token_len = 0;
 		ts->reset_token = 0;
+	} else if (ts->token_len == sizeof(ts->collect) - 1) {
+		ts->token_len = 0;
 	}
 
 	while (ts->len) {
@@ -995,6 +1035,13 @@ lws_tokenize(struct lws_tokenize *ts)
 		/* quoted string */
 
 		if (c == '\"') {
+			if (ts->state == LWS_TOKZS_TOKEN_POST_TERMINAL) {
+				/* report the pending token next time */
+				ts->start--;
+				ts->len++;
+				goto token_or_numeric;
+			}
+
 			if (ts->state == LWS_TOKZS_QUOTED_STRING) {
 				ts->reset_token = 1;
 
@@ -1069,12 +1116,16 @@ lws_tokenize(struct lws_tokenize *ts)
 
 		if (!utf8 &&
 		     ((ts->flags & LWS_TOKENIZE_F_RFC7230_DELIMS &&
-		     strchr(rfc7230_delims, c) && c > 32) ||
-		    ((!(ts->flags & LWS_TOKENIZE_F_RFC7230_DELIMS) &&
-		     (c < '0' || c > '9') && (c < 'A' || c > 'Z') &&
-		     (c < 'a' || c > 'z') && c != '_') &&
-		     c != s_minus && c != s_dot && c != s_star && c != s_eq) ||
-		    c == d_minus || c == d_dot || c == d_star || c == d_eq
+		       (char *)strchr(rfc7230_delims, c) && c > 32) ||
+		       ((!(ts->flags & LWS_TOKENIZE_F_RFC7230_DELIMS) &&
+		        (c < '0' || c > '9') && (c < 'A' || c > 'Z') &&
+		        (c < 'a' || c > 'z') && c != '_') &&
+		        c != s_minus && c != s_dot && c != s_star && c != s_eq && c != s_plus) ||
+		        c == d_minus ||
+			c == d_dot ||
+			c == d_star ||
+			c == d_eq ||
+			c == d_plus
 		    ) &&
 		    !((ts->flags & LWS_TOKENIZE_F_COLON_NONTERM) && c == ':') &&
 		    !((ts->flags & LWS_TOKENIZE_F_SLASH_NONTERM) && c == '/')) {
@@ -1096,8 +1147,15 @@ lws_tokenize(struct lws_tokenize *ts)
 			case LWS_TOKZS_QUOTED_STRING:
 agg:
 				ts->collect[ts->token_len++] = c;
-				if (ts->token_len == sizeof(ts->collect) - 1)
+				if (ts->token_len == sizeof(ts->collect) - 1) {
+					if (ts->flags & LWS_TOKENIZE_F_CHUNK) {
+						ts->collect[ts->token_len] = '\0';
+						return (ts->state == LWS_TOKZS_QUOTED_STRING) ?
+							LWS_TOKZE_QUOTED_STRING_CHUNK :
+							LWS_TOKZE_TOKEN_CHUNK;
+					}
 					return LWS_TOKZE_TOO_LONG;
+				}
 				ts->collect[ts->token_len] = '\0';
 				continue;
 
@@ -1135,8 +1193,15 @@ agg:
 		case LWS_TOKZS_QUOTED_STRING:
 		case LWS_TOKZS_TOKEN:
 			ts->collect[ts->token_len++] = c;
-			if (ts->token_len == sizeof(ts->collect) - 1)
+			if (ts->token_len == sizeof(ts->collect) - 1) {
+				if (ts->flags & LWS_TOKENIZE_F_CHUNK) {
+					ts->collect[ts->token_len] = '\0';
+					return (ts->state == LWS_TOKZS_QUOTED_STRING) ?
+						LWS_TOKZE_QUOTED_STRING_CHUNK :
+						LWS_TOKZE_TOKEN_CHUNK;
+				}
 				return LWS_TOKZE_TOO_LONG;
+			}
 			ts->collect[ts->token_len] = '\0';
 checknum:
 			if (!(ts->flags & LWS_TOKENIZE_F_NO_INTEGERS)) {
@@ -1418,7 +1483,7 @@ lws_strcmp_wildcard(const char *wildcard, size_t wlen, const char *check,
 	return wildcard != wc_end;
 }
 
-#if LWS_MAX_SMP > 1
+#if defined(LWS_WITH_NETWORK) && LWS_MAX_SMP > 1
 
 void
 lws_mutex_refcount_init(struct lws_mutex_refcount *mr)
@@ -1509,32 +1574,116 @@ lws_mutex_refcount_assert_held(struct lws_mutex_refcount *mr)
 
 #endif /* SMP */
 
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL)
+
+void
+lws_switches_print_help(const char *prog, const struct lws_switches *switches,
+			 size_t count)
+{
+	size_t i;
+
+	lwsl_user("\nUsage: %s [options]\n", prog);
+	lwsl_user("\n");
+
+	for (i = 0; i < count; i++)
+		lwsl_user("  %-20s %s\n", switches[i].sw, switches[i].doc);
+
+	lwsl_user("\n");
+}
 
 const char *
-lws_cmdline_option(int argc, const char **argv, const char *val)
+lws_cmdline_options(int argc, const char * const *argv, const char *val, const char *last)
 {
-	size_t n = strlen(val);
-	int c = argc;
+	int c = 1, hit = 0;
+	size_t n = 0;
+	const char *p;
 
-	while (--c > 0) {
+	if (val)
+		n = strlen(val);
 
-		if (!strncmp(argv[c], val, n)) {
-			if (!*(argv[c] + n) && c < argc - 1) {
-				/* coverity treats unchecked argv as "tainted" */
-				if (!argv[c + 1] || strlen(argv[c + 1]) > 1024)
-					return NULL;
-				return argv[c + 1];
-			}
+	while (c < argc) {
 
-			if (argv[c][n] == '=')
-				return &argv[c][n + 1];
-			return argv[c] + n;
+		if (val && strncmp(argv[c], val, n)) /* skip if not matching val */
+			goto bump;
+
+		if (!val && argv[c][0] == '-') /* looking for non-switch */
+			goto bump;
+
+		if (!val && argv[c][0] != '-') { /* looking for non-switch */
+			p = argv[c];
+			goto try;
 		}
+
+		if (c < argc - 1 && !*(argv[c] + n)) {
+			/* coverity treats unchecked argv as "tainted" */
+			if (!argv[c + 1] || strlen(argv[c + 1]) > 1024)
+				return NULL;
+
+			p = argv[c + 1];
+			goto try;
+		}
+
+		if (argv[c][n] == '=') {
+			p =  &argv[c][n + 1];
+			goto try;
+		}
+
+		p = argv[c] + n;
+
+try:
+		if (last && !hit) {
+			if (p == last)
+				hit = 1;
+			goto bump;
+		}
+
+		return p;
+bump:
+		c++;
 	}
 
 	return NULL;
 }
 
+const char *
+lws_cmdline_options_cx(const struct lws_context *cx, const char *val, const char *last)
+{
+	if (!cx->argc)
+		return NULL;
+
+	if (!cx->stdin_argc)
+		return lws_cmdline_options((int)cx->argc, cx->argv, val, last);
+
+	return lws_cmdline_options((int)cx->stdin_argc, cx->stdin_argv, val, last);
+}
+
+const char *
+lws_cmdline_option_cx(const struct lws_context *cx, const char *val)
+{
+	return lws_cmdline_options_cx(cx, val, NULL);
+}
+
+const char *
+lws_cmdline_option_cx_argv0(const struct lws_context *cx)
+{
+	if (!cx->argc || !cx->argv)
+		return NULL;
+
+	if (!cx->stdin_argc)
+		return cx->argv[0];
+
+	return cx->stdin_argv[0];
+}
+
+
+const char *
+lws_cmdline_option(int argc, const char **argv, const char *val)
+{
+	return lws_cmdline_options(argc, argv, val, NULL);
+}
+#endif
+
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL) && !defined(LWS_PLAT_ANDROID) && defined(LWS_WITH_NETWORK)
 static const char * const builtins[] = {
 	"-d",
 	"--fault-injection",
@@ -1543,6 +1692,7 @@ static const char * const builtins[] = {
 	"--ssproxy-port",
 	"--ssproxy-iface",
 	"--ssproxy-ads",
+	"--lws-stub",
 };
 
 enum opts {
@@ -1553,9 +1703,9 @@ enum opts {
 	OPT_SSPROXY_PORT,
 	OPT_SSPROXY_IFACE,
 	OPT_SSPROXY_ADS,
+	OPT_LWS_STUB,
 };
 
-#if !defined(LWS_PLAT_FREERTOS)
 static void
 lws_sigterm_catch(int sig)
 {
@@ -1607,6 +1757,7 @@ lws_context_default_loop_run_destroy(struct lws_context *cx)
 }
 #endif
 
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL) && !defined(LWS_PLAT_ANDROID) && defined(LWS_WITH_NETWORK)
 int
 lws_cmdline_passfail(int argc, const char **argv, int actual)
 {
@@ -1632,10 +1783,14 @@ lws_cmdline_option_handle_builtin(int argc, const char **argv,
 				  struct lws_context_creation_info *info)
 {
 	const char *p;
-	int n, m, logs = LLL_USER | LLL_ERR | LLL_WARN | LLL_NOTICE;
+	int n, m, logs = info->default_loglevel ? info->default_loglevel :
+				LLL_USER | LLL_ERR | LLL_WARN | LLL_NOTICE;
 #if defined(LWS_WITH_SYS_FAULT_INJECTION)
 	uint64_t seed = (uint64_t)lws_now_usecs();
 #endif
+
+	info->argc = argc;
+	info->argv = argv;
 
 	for (n = 0; n < (int)LWS_ARRAY_SIZE(builtins); n++) {
 		p = lws_cmdline_option(argc, argv, builtins[n]);
@@ -1686,6 +1841,10 @@ lws_cmdline_option_handle_builtin(int argc, const char **argv,
 			signal(SIGTERM, lws_sigterm_catch);
 #endif
 			break;
+
+		case OPT_LWS_STUB:
+			info->lws_stub = p;
+			break;
 		}
 	}
 
@@ -1700,7 +1859,7 @@ lws_cmdline_option_handle_builtin(int argc, const char **argv,
 				(unsigned long long)seed);
 #endif
 }
-
+#endif
 
 const lws_humanize_unit_t humanize_schema_si[] = {
 	{ "Pi", LWS_PI }, { "Ti", LWS_TI }, { "Gi", LWS_GI },
@@ -1756,24 +1915,40 @@ decim(char *r, uint64_t v, char chars, char leading)
 int
 lws_humanize(char *p, size_t len, uint64_t v, const lws_humanize_unit_t *schema)
 {
+	const lws_humanize_unit_t *s = NULL;
 	char *obuf = p, *end = p + len;
 
 	do {
 		if (v >= schema->factor || schema->factor == 1) {
+			if (schema[1].name)
+				s = &schema[1];
+
 			if (schema->factor == 1) {
 				p += decim(p, v, 4, 0);
 				p += lws_snprintf(p, lws_ptr_diff_size_t(end, p),
-						    "%s", schema->name);
+						"%s", schema->name);
 				return lws_ptr_diff(p, obuf);
 			}
 
 			p += decim(p, v / schema->factor, 4, 0);
-			*p++ = '.';
-			p += decim(p, (v % schema->factor) /
-					(schema->factor / 1000), 3, 1);
+			if (s) {
+				uint64_t iif = schema->factor / s->factor;
 
-			p += lws_snprintf(p, lws_ptr_diff_size_t(end, p),
-					    "%s", schema->name);
+				if (s->factor * 1000 == schema->factor ||
+				    s->factor * 1024 == schema->factor) { /* decimal */
+					uint64_t d = (v % schema->factor) / (schema->factor / 1000);
+
+					if (d) { /* we want, eg 123ms rather than 123.000ms */
+						*p++ = '.';
+						p += decim(p, d, 3, 1);
+					}
+				} else { /* imperial fraction, eg, h:m */
+					*p++ = ':';
+					p += decim(p, (v % schema->factor) / s->factor,
+							iif >= 100 ? 3 : (iif >= 10 ? 2 : 1), 1);
+				}
+			}
+			p += lws_snprintf(p, lws_ptr_diff_size_t(end, p), "%s", schema->name);
 			return lws_ptr_diff(p, obuf);
 		}
 		schema++;
@@ -1783,6 +1958,31 @@ lws_humanize(char *p, size_t len, uint64_t v, const lws_humanize_unit_t *schema)
 	strncpy(p, "unknown value", len);
 
 	return 0;
+}
+
+int
+lws_humanize_pad(char *p, size_t len, uint64_t v, const lws_humanize_unit_t *schema)
+{
+       size_t m, w = 0, n = (size_t)lws_humanize(p, len, v, schema);
+	const lws_humanize_unit_t *s = schema;
+       int t;
+
+	while (s->name) {
+		if (strlen(s->name) > w)
+			w = strlen(s->name);
+		s++;
+	}
+
+	m = (3 + 1 + 3 + w) - (size_t)n;
+
+       for (t = (int)n - 1; t >= 0; t--)
+               p[(size_t)t + m] = p[t];
+	p[m + n] = '\0';
+
+       for (t = 0; t < (int)m; t++)
+		p[t] = ' ';
+
+	return (int)(n + m);
 }
 
 /*
@@ -2082,4 +2282,34 @@ lws_fx_string(const lws_fx_t *a, char *buf, size_t size)
 	buf[n] = '\0';
 
 	return buf;
+}
+
+lws_usec_t
+lws_parse_iso8601(const char *ads)
+{
+	struct tm tm;
+	const char *p = ads;
+
+	if (!ads)
+		return 0;
+
+	memset(&tm, 0, sizeof(tm));
+
+	/* ISO8601 / WHOIS dates: YYYY-MM-DDTHH:MM:SSZ and variants */
+	if (sscanf(p, "%d-%d-%dT%d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+		   &tm.tm_hour, &tm.tm_min, &tm.tm_sec) < 3) {
+		/* Try with space instead of T */
+		if (sscanf(p, "%d-%d-%d %d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+			   &tm.tm_hour, &tm.tm_min, &tm.tm_sec) < 3)
+			return 0;
+	}
+
+	tm.tm_year -= 1900;
+	tm.tm_mon -= 1;
+
+#if defined(LWS_HAVE_TIMEGM)
+	return (lws_usec_t)timegm(&tm);
+#else
+	return (lws_usec_t)mktime(&tm); /* flawed but better than nothing */
+#endif
 }

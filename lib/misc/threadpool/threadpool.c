@@ -233,6 +233,22 @@ lws_threadpool_dump(struct lws_threadpool *tp)
 #endif
 }
 
+void
+lws_threadpool_diagnose(struct lws_threadpool *tp,
+			int *ongoing, int *possible, int *queue_depth)
+{
+	pthread_mutex_lock(&tp->lock);
+
+	if (ongoing)
+		*ongoing = tp->running_tasks;
+	if (possible)
+		*possible = tp->threads_in_pool;
+	if (queue_depth)
+		*queue_depth = tp->queue_depth;
+
+	pthread_mutex_unlock(&tp->lock);
+}
+
 static void
 state_transition(struct lws_threadpool_task *task,
 		 enum lws_threadpool_task_status status)
@@ -355,6 +371,8 @@ lws_threadpool_tsi_context(struct lws_context *context, int tsi)
 
 		/* for the done tasks... */
 
+		pthread_mutex_lock(&tp->lock); /* ======================== tpool lock */
+
 		c = &tp->task_done_head;
 
 		while (*c) {
@@ -379,6 +397,8 @@ lws_threadpool_tsi_context(struct lws_context *context, int tsi)
 
 			c = &task->task_queue_next;
 		}
+
+		pthread_mutex_unlock(&tp->lock); /* -------------------- tpool unlock */
 
 		tp = tp->tp_list;
 	}
@@ -493,14 +513,20 @@ lws_threadpool_worker(void *d)
 	struct lws_threadpool_task **c, **c2, *task;
 	struct lws_pool *pool = d;
 	struct lws_threadpool *tp = pool->tp;
-	char buf[160];
+	char buf[160], tpd = 0;
 
-	while (!tp->destroying) {
+	while (!tpd) {
 
 		/* we have no running task... wait and get one from the queue */
 
 		pthread_mutex_lock(&tp->lock); /* =================== tp lock */
 
+		tpd = tp->destroying;
+		if (tpd) {
+			pthread_mutex_unlock(&tp->lock); /* --------------- tp unlock */
+
+			continue;
+		}
 		/*
 		 * if there's no task already waiting in the queue, wait for
 		 * the wake_idle condition to signal us that might have changed
@@ -581,10 +607,14 @@ lws_threadpool_worker(void *d)
 			lws_usec_t then;
 			int n;
 
-			if (tp->destroying || !task_to_wsi(task)) {
+			pthread_mutex_lock(&tp->lock); /* =================== tp lock */
+
+			if (tp->destroying || !task_to_wsi(task)) { /* cov */
 				lwsl_info("%s: stopping on wsi gone\n", __func__);
 				state_transition(task, LWS_TP_STATUS_STOPPING);
 			}
+
+			pthread_mutex_unlock(&tp->lock); /* --------------- tp unlock */
 
 			then = lws_now_usecs();
 			n = (int)task->args.task(task->args.user, task->status);
@@ -809,8 +839,6 @@ lws_threadpool_destroy(struct lws_threadpool *tp)
 #endif
 
 	for (n = 0; n < tp->threads_in_pool; n++) {
-		task = tp->pool_list[n].task;
-
 		pthread_join(tp->pool_list[n].thread, &retval);
 		pthread_mutex_destroy(&tp->pool_list[n].lock);
 	}
@@ -818,6 +846,7 @@ lws_threadpool_destroy(struct lws_threadpool *tp)
 #if defined(WIN32)
 	Sleep(1000);
 #endif
+	pthread_mutex_lock(&tp->lock); /* ======================== tpool lock */
 
 	task = tp->task_done_head;
 	while (task) {
@@ -826,6 +855,8 @@ lws_threadpool_destroy(struct lws_threadpool *tp)
 		tp->done_queue_depth--;
 		task = next;
 	}
+
+	pthread_mutex_unlock(&tp->lock); /* -------------------- tpool unlock */
 
 	pthread_mutex_destroy(&tp->lock);
 
@@ -974,14 +1005,14 @@ lws_threadpool_enqueue(struct lws_threadpool *tp,
 	struct lws_threadpool_task *task = NULL;
 	va_list ap;
 
-	if (tp->destroying)
-		return NULL;
+	pthread_mutex_lock(&tp->lock); /* ======================== tpool lock */
 
 #if defined(LWS_WITH_SECURE_STREAMS)
 	assert(args->ss || args->wsi);
 #endif
 
-	pthread_mutex_lock(&tp->lock); /* ======================== tpool lock */
+	if (tp->destroying)
+		goto bail;
 
 	/*
 	 * if there's room on the queue, the job always goes on the queue
@@ -1170,8 +1201,10 @@ static int
 disassociate_wsi(struct lws_threadpool_task *task,
 		  void *user)
 {
+#if !defined(__COVERITY__)
 	task->args.wsi = NULL;
 	lws_dll2_remove(&task->list);
+#endif
 
 	return 0;
 }

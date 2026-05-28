@@ -76,8 +76,8 @@ lws_client_dns_retry_timeout(lws_sorted_usec_list_t *sul)
 	 */
 
 	lwsl_wsi_info(wsi, "dns retry");
-	if (!lws_client_connect_2_dnsreq(wsi))
-		lwsl_wsi_notice(wsi, "DNS lookup failed");
+	if (!lws_client_connect_2_dnsreq_MAY_CLOSE_WSI(wsi))
+		lwsl_notice("DNS lookup failed");
 }
 
 /*
@@ -189,7 +189,7 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 	const char *cce = "Unable to connect", *iface, *local_port;
 	const struct sockaddr *psa = NULL;
 	uint16_t port = wsi->conn_port;
-	char dcce[48], t16[16];
+	char dcce[128], t16[16];
 	lws_dns_sort_t *curr;
 	ssize_t plen = 0;
 	lws_dll2_t *d;
@@ -249,7 +249,7 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 		 */
 
 		lwsi_set_state(wsi, LRS_UNCONNECTED);
-		lws_sul_schedule(wsi->a.context, 0, &wsi->sul_connect_timeout,
+		lws_sul_schedule(wsi->a.context, wsi->tsi, &wsi->sul_connect_timeout,
 				 lws_client_dns_retry_timeout,
 						 LWS_USEC_PER_SEC);
 		return wsi;
@@ -312,7 +312,7 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 	if (ads && *ads == '+') {
 		ads++;
 		memset(&wsi->sa46_peer, 0, sizeof(wsi->sa46_peer));
-		af = sau.sun_family = AF_UNIX;
+		sau.sun_family = AF_UNIX;
 		strncpy(sau.sun_path, ads, sizeof(sau.sun_path));
 		sau.sun_path[sizeof(sau.sun_path) - 1] = '\0';
 
@@ -360,6 +360,10 @@ next_dns_result:
 
 	lws_dll2_remove(&curr->list);
 	wsi->sa46_peer = curr->dest;
+#if defined(LWS_WITH_UDP)
+	if (wsi->udp)
+		wsi->udp->sa46 = curr->dest;
+#endif
 #if defined(LWS_WITH_NETLINK)
 	wsi->peer_route_uidx = curr->uidx;
 	lwsl_wsi_info(wsi, "peer_route_uidx %d", wsi->peer_route_uidx);
@@ -391,7 +395,6 @@ ads_known:
 		}
 
 #if defined(LWS_WITH_UNIX_SOCK)
-		af = 0;
 		if (wsi->unix_skt) {
 			af = AF_UNIX;
 			wsi->desc.sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -400,8 +403,13 @@ ads_known:
 #endif
 		{
 			af = wsi->sa46_peer.sa4.sin_family;
+#if defined(LWS_WITH_UDP)
 			wsi->desc.sockfd = socket(wsi->sa46_peer.sa4.sin_family,
-						  SOCK_STREAM, 0);
+						  (wsi->udp || !strcmp(wsi->role_ops->name, "quic")) ? SOCK_DGRAM : SOCK_STREAM, 0);
+#else
+			wsi->desc.sockfd = socket(wsi->sa46_peer.sa4.sin_family,
+						  (!strcmp(wsi->role_ops->name, "quic")) ? SOCK_DGRAM : SOCK_STREAM, 0);
+#endif
 		}
 
 		if (!lws_socket_is_valid(wsi->desc.sockfd)) {
@@ -415,7 +423,11 @@ ads_known:
 			goto try_next_dns_result;
 		}
 
-		if (lws_plat_set_socket_options(wsi->a.vhost, wsi->desc.sockfd,
+#if defined(LWS_WITH_UDP)
+		if (!wsi->udp && strcmp(wsi->role_ops->name, "quic") != 0 && lws_plat_set_socket_options(wsi->a.vhost, wsi->desc.sockfd,
+#else
+		if (strcmp(wsi->role_ops->name, "quic") != 0 && lws_plat_set_socket_options(wsi->a.vhost, wsi->desc.sockfd,
+#endif
 #if defined(LWS_WITH_UNIX_SOCK)
 						wsi->unix_skt)) {
 #else
@@ -429,6 +441,17 @@ ads_known:
 			cce = dcce;
 			lwsl_wsi_warn(wsi, "%s", dcce);
 			goto try_next_dns_result_closesock;
+		}
+
+#if defined(LWS_WITH_UDP)
+		if (wsi->udp || !strcmp(wsi->role_ops->name, "quic")) {
+#else
+		if (!strcmp(wsi->role_ops->name, "quic")) {
+#endif
+			if (lws_plat_set_nonblocking(wsi->desc.sockfd)) {
+				cce = "conn fail: set nonblocking";
+				goto try_next_dns_result_closesock;
+			}
 		}
 
 		/* apply requested socket options */
@@ -503,9 +526,13 @@ ads_known:
 #if defined(LWS_WITH_UNIX_SOCK)
 	if (wsi->unix_skt) {
 		psa = (const struct sockaddr *)&sau;
-		if (sau.sun_path[0])
+		if (sau.sun_path[0]) {
+#if defined(WIN32)
+			n = (int)(sizeof(uint16_t) + strlen(sau.sun_path) + 1);
+#else
 			n = (int)(sizeof(uint16_t) + strlen(sau.sun_path));
-		else
+#endif
+		} else
 			n = (int)(sizeof(uint16_t) +
 					strlen(&sau.sun_path[1]) + 1);
 	} else
@@ -553,7 +580,7 @@ ads_known:
 		char buf[64];
 
 		lws_sa46_write_numeric_address((lws_sockaddr46 *)psa, buf, sizeof(buf));
-		lwsl_wsi_notice(wsi, "trying %s", buf);
+		lwsl_wsi_info(wsi, "trying %s", buf);
 	}
 
 #if defined(LWS_WITH_SYS_FAULT_INJECTION)
@@ -562,8 +589,22 @@ ads_known:
 		m = -1;
 	else
 #endif
+#if defined(LWS_WITH_LATENCY)
+		lws_usec_t _conn_start = lws_now_usecs();
+#endif
+
 		m = connect(wsi->desc.sockfd, (const struct sockaddr *)psa,
 			    (socklen_t)n);
+
+#if defined(LWS_WITH_LATENCY)
+		{
+			unsigned int ms = (unsigned int)((lws_now_usecs() - _conn_start) / 1000);
+			if (ms > 2) {
+				struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
+				lws_latency_note(pt, _conn_start, 2000, "connect:%dms", ms);
+			}
+		}
+#endif
 
 #if defined(LWS_WITH_CONMON)
 	wsi->conmon_datum = lws_now_usecs();
@@ -634,6 +675,7 @@ ads_known:
 					     "conn fail: %s: UDS %s",
 					     lws_errno_describe(errno_copy, t16, sizeof(t16)), ads);
 				cce = dcce;
+				lwsl_wsi_info(wsi, "%s", cce);
 			}
 #endif
 #endif
@@ -655,7 +697,7 @@ ads_known:
 		 * uses wsi->sul_connect_timeout just for this purpose
 		 */
 
-		lws_sul_schedule(wsi->a.context, 0, &wsi->sul_connect_timeout,
+		lws_sul_schedule(wsi->a.context, wsi->tsi, &wsi->sul_connect_timeout,
 				 lws_client_conn_wait_timeout,
 				 wsi->a.context->timeout_secs *
 						 LWS_USEC_PER_SEC);
@@ -703,7 +745,7 @@ conn_good:
 				(struct sockaddr *)&wsi->sa46_local,
 				&salen) == -1) {
 			en = LWS_ERRNO;
-			lwsl_warn("getsockname: %s\n", lws_errno_describe(en, t16, sizeof(t16)));
+			lwsl_info("getsockname: %s\n", lws_errno_describe(en, t16, sizeof(t16)));
 		}
 #if defined(_DEBUG)
 #if defined(LWS_WITH_UNIX_SOCK)
@@ -801,6 +843,7 @@ try_next_dns_result:
 	lws_inform_client_conn_fail(wsi, (void *)cce, strlen(cce));
 
 failed1:
+	lws_sul_cancel(&wsi->sul_connect_timeout);
 	lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "client_connect3");
 
 	return NULL;

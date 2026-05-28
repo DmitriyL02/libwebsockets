@@ -8,6 +8,17 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_STDOUT,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_STDOUT]	= { "--stdout",        "Enable --stdout feature" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <fcntl.h>
@@ -23,7 +34,7 @@ LWS_SS_USER_TYPEDEF
 	lws_jpeg_t			*j;
 } myss_t;
 
-static lws_dlo_rasterize_t rast;
+static lws_dlo_rasterize_t dlo_rasterize;
 struct lws_context *cx;
 static int fdout = 1, result = 1;
 
@@ -165,7 +176,7 @@ myss_state(void *userobj, void *sh, lws_ss_constate_t state,
 		if (r)
 			return r;
 
-		lws_dll2_add_tail(&m->flow.list, &rast.owner);
+		lws_dll2_add_tail(&m->flow.list, &dlo_rasterize.owner);
 		break;
 
 	case LWSSSCS_DESTROYING:
@@ -200,6 +211,13 @@ main(int argc, const char **argv)
 	struct lws_context_creation_info info;
 	const char *p;
 	size_t l = 0;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	lwsl_user("LWS SS JPEG test client   <https://server/my.jpg>\n");
 
@@ -208,7 +226,7 @@ main(int argc, const char **argv)
 	memset(&info, 0, sizeof info);
 	lws_cmdline_option_handle_builtin(argc, argv, &info);
 
-	if ((p = lws_cmdline_option(argc, argv, "--stdout"))) {
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_STDOUT].sw))) {
 		fdout = open(p, LWS_O_WRONLY | LWS_O_CREAT | LWS_O_TRUNC, 0600);
 		if (fdout < 0) {
 			lwsl_err("%s: unable to open stdout file\n", __func__);

@@ -94,7 +94,7 @@ const struct http2_settings lws_h2_stock_settings = { {
  * another path via lws_service_do_ripe_rxflow() on mux children too tho...
  */
 
-static int
+static lws_handling_result_t
 rops_handle_POLLIN_h2(struct lws_context_per_thread *pt, struct lws *wsi,
 		       struct lws_pollfd *pollfd)
 {
@@ -191,7 +191,10 @@ rops_handle_POLLIN_h2(struct lws_context_per_thread *pt, struct lws *wsi,
 			 * (new RX may trigger new http_action() that
 			 * expect to be able to send)
 			 */
-			return LWS_HPI_RET_HANDLED;
+			if (!lwsi_role_client(wsi))
+				return LWS_HPI_RET_HANDLED;
+			else
+				lwsl_notice("%s: allowing POLLIN despite buffered out (client)\n", __func__);
 		}
 	}
 
@@ -224,24 +227,66 @@ read:
 
 	if (!(lwsi_role_client(wsi) &&
 	      (lwsi_state(wsi) != LRS_ESTABLISHED &&
-	       // lwsi_state(wsi) != LRS_H1C_ISSUE_HANDSHAKE2 &&
+	       lwsi_state(wsi) != LRS_ISSUE_HTTP_BODY &&
+	       lwsi_state(wsi) != LRS_WAITING_SERVER_REPLY &&
 	       lwsi_state(wsi) != LRS_H2_WAITING_TO_SEND_HEADERS))) {
 
+		int scr_ret;
+
 		ebuf.token = pt->serv_buf;
-		ebuf.len = lws_ssl_capable_read(wsi,
+#if defined(LWS_WITH_LATENCY)
+		lws_usec_t _h2_cap_read_start = lws_now_usecs();
+#endif
+		scr_ret = lws_ssl_capable_read(wsi,
 					ebuf.token,
 					wsi->a.context->pt_serv_buf_size);
-		switch (ebuf.len) {
+#if defined(LWS_WITH_LATENCY)
+		{
+			unsigned int ms = (unsigned int)((lws_now_usecs() - _h2_cap_read_start) / 1000);
+			if (ms > 2)
+				lws_latency_note(pt, _h2_cap_read_start, 2000, "h2capread:%dms", ms);
+		}
+#endif
+		switch (scr_ret) {
 		case 0:
 			lwsl_info("%s: zero length read\n", __func__);
 			return LWS_HPI_RET_PLEASE_CLOSE_ME;
-		case LWS_SSL_CAPABLE_MORE_SERVICE:
-			lwsl_info("SSL Capable more service\n");
+		case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
+			lwsl_info("SSL Capable more service (read)\n");
+			if (wsi->pending_timeout)
+				lws_set_timeout(wsi, (enum pending_timeout)wsi->pending_timeout,
+						wsi->pending_timeout == PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE ?
+						(int)lws_wsi_keepalive_timeout_eff(wsi) : (int)wsi->a.context->timeout_secs);
+			return LWS_HPI_RET_HANDLED;
+		case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
+			lwsl_info("SSL Capable more service (write)\n");
+			if (wsi->pending_timeout)
+				lws_set_timeout(wsi, (enum pending_timeout)wsi->pending_timeout,
+						wsi->pending_timeout == PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE ?
+						(int)lws_wsi_keepalive_timeout_eff(wsi) : (int)wsi->a.context->timeout_secs);
 			return LWS_HPI_RET_HANDLED;
 		case LWS_SSL_CAPABLE_ERROR:
 			lwsl_info("%s: LWS_SSL_CAPABLE_ERROR\n", __func__);
 			return LWS_HPI_RET_PLEASE_CLOSE_ME;
 		}
+
+		/*
+		 * coverity is confused: it knows lws_ssl_capable_read may
+		 * return < 0 and assigning that to ebuf.len is bad, but it
+		 * doesn't understand this check below on scr_ret < 0
+		 * removes that possibility
+		 */
+
+		ebuf.len = scr_ret;
+		if (ebuf.len < 0) /* ie, not usable data */ {
+			lwsl_info("%s: other error\n", __func__);
+			return LWS_HPI_RET_PLEASE_CLOSE_ME;
+		}
+
+		if (wsi->pending_timeout)
+			lws_set_timeout(wsi, (enum pending_timeout)wsi->pending_timeout,
+					wsi->pending_timeout == PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE ?
+					(int)lws_wsi_keepalive_timeout_eff(wsi) : (int)wsi->a.context->timeout_secs);
 
 		// lwsl_notice("%s: Actual RX %d\n", __func__, ebuf.len);
 		// if (ebuf.len > 0)
@@ -291,11 +336,21 @@ drain:
 
 	if (ebuf.len) {
 		n = 0;
+#if defined(LWS_WITH_LATENCY)
+		lws_usec_t _h2_read_start = lws_now_usecs();
+#endif
 		if (lwsi_role_h2(wsi) && lwsi_state(wsi) != LRS_BODY &&
 		    lwsi_state(wsi) != LRS_DISCARD_BODY)
 			n = lws_read_h2(wsi, ebuf.token, (unsigned int)ebuf.len);
 		else
 			n = lws_read_h1(wsi, ebuf.token, (unsigned int)ebuf.len);
+#if defined(LWS_WITH_LATENCY)
+		{
+			unsigned int ms = (unsigned int)((lws_now_usecs() - _h2_read_start) / 1000);
+			if (ms > 2)
+				lws_latency_note(pt, _h2_read_start, 2000, "h2read:%dms", ms);
+		}
+#endif
 
 		if (n < 0) {
 			/* we closed wsi */
@@ -313,7 +368,8 @@ drain:
 				lws_dll2_remove(&wsi->dll_buflist);
 			}
 		} else
-			if (n && n < ebuf.len && ebuf.len > 0) {
+			/* cov: both n and ebuf.len are int */
+			if (n > 0 && n < ebuf.len && ebuf.len > 0) {
 				// lwsl_notice("%s: h2 append seg %d\n", __func__, ebuf.len - n);
 				m = lws_buflist_append_segment(&wsi->buflist,
 						ebuf.token + n,
@@ -360,12 +416,17 @@ drain:
 	return LWS_HPI_RET_HANDLED;
 }
 
-int rops_handle_POLLOUT_h2(struct lws *wsi)
+lws_handling_result_t
+rops_handle_POLLOUT_h2(struct lws *wsi)
 {
 	// lwsl_notice("%s\n", __func__);
 
 	if (lwsi_state(wsi) == LRS_ISSUE_HTTP_BODY)
 		return LWS_HP_RET_USER_SERVICE;
+
+	if (lwsi_state(wsi) == LRS_AWAITING_FILE_READ) {
+		return LWS_HP_RET_DROP_POLLOUT;
+	}
 
 	/*
 	 * Priority 1: H2 protocol packets
@@ -734,6 +795,12 @@ rops_close_kill_connection_h2(struct lws *wsi, enum lws_close_status reason)
 #endif
 			wsi->mux_substream) &&
 	     wsi->mux.parent_wsi) {
+
+		if (wsi->mux.parent_wsi->h2.h2n &&
+		    wsi->mux.parent_wsi->h2.h2n->swsi == wsi) {
+			wsi->mux.parent_wsi->h2.h2n->swsi = NULL;
+		}
+
 		lws_wsi_mux_sibling_disconnect(wsi);
 		if (wsi->h2.pending_status_body)
 			lws_free_set_NULL(wsi->h2.pending_status_body);
@@ -849,6 +916,21 @@ lws_h2_bind_for_post_before_action(struct lws *wsi)
 
 		if (lws_bind_protocol(wsi, pp, __func__))
 			return 1;
+#if defined(LWS_WITH_HTTP_BASIC_AUTH)
+		/* basic auth? */
+
+		switch (lws_check_basic_auth(wsi, hit->basic_auth_login_file,
+					     hit->auth_mask & AUTH_MODE_MASK)) {
+		case LCBA_CONTINUE:
+		case LCBA_AUTH_RETRY_KEEPALIVE:
+			break;
+		case LCBA_FAILED_AUTH:
+			return lws_unauthorised_basic_auth(wsi);
+		case LCBA_END_TRANSACTION:
+			lws_return_http_status(wsi, HTTP_STATUS_FORBIDDEN, NULL);
+			return lws_http_transaction_completed(wsi);
+		}
+#endif
 	}
 
 	methidx = lws_http_get_uri_and_method(wsi, &uri_ptr, &uri_len);
@@ -1186,6 +1268,23 @@ rops_perform_user_POLLOUT_h2(struct lws *wsi)
 		 * Acknowledge receipt of peer's notification he closed,
 		 * then logically close ourself
 		 */
+
+		if (lwsi_role_ws(w) && w->ws->send_check_ping) {
+			lwsl_info("%s: issuing ping on wsi %s: %s %s h2: %d\n", __func__,
+					lws_wsi_tag(w),
+					w->role_ops->name, w->a.protocol->name,
+					w->mux_substream);
+
+			w->ws->send_check_ping = 0;
+			n = lws_write(w, &w->ws->ping_payload_buf[LWS_PRE],
+				      8, LWS_WRITE_PING);
+			if (n < 0)
+				return -1;
+
+			lws_callback_on_writable(w);
+			w->mux.requested_POLLOUT = 1;
+			goto next_child;
+		}
 
 		if ((lwsi_role_ws(w) && w->ws->pong_pending_flag) ||
 		    (lwsi_state(w) == LRS_RETURNED_CLOSE &&

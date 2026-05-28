@@ -94,10 +94,13 @@ __lws_shadow_wsi(struct lws_dbus_ctx *ctx, DBusWatch *w, int fd, int create_ok)
 	lws_vhost_bind_wsi(ctx->vh, wsi);
 	if (__insert_wsi_socket_into_fds(ctx->vh->context, wsi)) {
 		lwsl_err("inserting wsi socket into fds failed\n");
+		lws_dll2_remove(&wsi->pre_natal);
 		__lws_vhost_unbind_wsi(wsi); /* cx + vh lock */
 		lws_free(wsi);
 		return NULL;
 	}
+
+	lws_dll2_remove(&wsi->pre_natal);
 
 	return wsi;
 }
@@ -293,8 +296,6 @@ lws_dbus_sul_cb(lws_sorted_usec_list_t *sul)
 		if (time(NULL) > r->fire) {
 			lwsl_notice("%s: firing timer\n", __func__);
 			dbus_timeout_handle(r->data);
-			lws_dll2_remove(rdt);
-			lws_free(rdt);
 		}
 	} lws_end_foreach_dll_safe(rdt, nx);
 
@@ -474,7 +475,7 @@ bail:
  * this.
  */
 
-static int
+static lws_handling_result_t
 rops_handle_POLLIN_dbus(struct lws_context_per_thread *pt, struct lws *wsi,
 			struct lws_pollfd *pollfd)
 {

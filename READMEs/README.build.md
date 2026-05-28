@@ -75,13 +75,6 @@ You can do this by, eg
 ```
 
 **NOTE3**:
-On machines that want libraries in lib64, you can also add the
-following to the cmake line
-```
-    -DLIB_SUFFIX=64
-```
-
-**NOTE4**:
 If you are building against a non-distro OpenSSL (eg, in order to get
 access to ALPN support only in newer OpenSSL versions) the nice way to
 express that in one cmake command is eg,
@@ -127,8 +120,13 @@ and libnsl, and only builds in 64bit mode.
 
 **NOTE7**
 
-Build and test flow against boringssl.  Notice `LWS_WITH_GENHASH` is currently
-unavailable with boringssl due to their removing the necessary apis.
+Build and test flow against boringssl.
+
+Notice since boringssl is based on openssl, it cannot coexist with openssl or
+other projects based directly on openssl, since they all share, eg,
+`/usr/include/openssl/...`.  For that reason, boring build is installed
+into `/usr/boringssl/` here so it cannot conflict with other tls libraries.
+
 
 Build current HEAD boringssl
 
@@ -138,29 +136,88 @@ Build current HEAD boringssl
  $ cd boringssl
  $ mkdir build
  $ cd build
- $ cmake ..  -DBUILD_SHARED_LIBS=1
- $ make -j8
+ $ cmake .. -DCMAKE_INSTALL_PREFIX=/usr/boringssl -DBUILD_SHARED_LIBS=1
+ $ make -j8 && sudo make -j8 install
 ```
 
 Build and test lws against it
 
 ```
  $ cd /projects/libwebsockets/build
- $ cmake .. -DOPENSSL_LIBRARIES="/projects/boringssl/build/ssl/libssl.so;\
-   /projects/boringssl/build/crypto/libcrypto.so" \
-   -DOPENSSL_INCLUDE_DIRS=/projects/boringssl/include \
+ $ cmake .. -DOPENSSL_LIBRARIES="/usr/boringssl/lib64/libssl.so;\
+   /usr/boringssl/lib64/libcrypto.so" \
+   -DOPENSSL_INCLUDE_DIRS=/usr/boringssl/include \
    -DLWS_WITH_BORINGSSL=1 -DCMAKE_BUILD_TYPE=DEBUG
- $ make -j8 && sudo make install
- $ LD_PRELOAD="/projects/boringssl/build/ssl/libssl.so \
-   /projects/boringssl/build/crypto/libcrypto.so" \
-   /usr/local/bin/libwebsockets-test-server -s
+ $ make -j8 && sudo make -j8 install
+ $ /usr/local/bin/libwebsockets-test-server -s
 ```
 
-4. Finally you can build using the generated Makefile:
+**NOTE8**
 
-```bash
-    $ make
- ```
+Build and test flow against libressl.
+
+Notice since libressl is based on openssl, it cannot coexist with openssl or
+other projects based directly on openssl, since they all share, eg,
+`/usr/include/openssl/...`.  For that reason, libressl build is installed
+into `/usr/libressl/` here so it cannot conflict with other tls libraries.
+
+Build current HEAD libressl
+
+```
+ $ cd /projects
+ $ git clone https://github.com/libressl/portable.git
+ $ cd portable
+ $ mkdir build
+ $ cd build
+ $ cmake ..  -DBUILD_SHARED_LIBS=1 -DOPENSSLDIR=/etc/ssl -DCMAKE_INSTALL_PREFIX=/usr/libressl
+ $ make -j8 && sudo make -j8 install
+```
+
+Build and test lws against it
+
+```
+ $ cd /projects/libwebsockets/build
+ $ cmake .. -DOPENSSL_LIBRARIES="/usr/libressl/lib64/libtls.so;/usr/libressl/lib64/libssl.so;\
+   /usr/libressl/lib64/libcrypto.so" \
+   -DOPENSSL_INCLUDE_DIRS=/usr/libressl/include \
+   -DLWS_WITH_LIBRESSL=1
+ $ make -j8 && sudo make -j8 install
+ $ /usr/local/bin/libwebsockets-test-server -s
+```
+
+**NOTE9**
+
+Build and test flow against AWS-LC.
+
+Notice since aws-lc is based on openssl, it cannot coexist with openssl or
+other projects based directly on openssl, since they all share, eg,
+`/usr/include/openssl/...`.  For that reason, aws-lc build is installed
+into `/usr/aws-lc/` here so it cannot conflict with other tls libraries.
+
+Build current HEAD AWS-LC
+
+```
+ $ cd /projects
+ $ git clone https://github.com/aws/aws-lc.git
+ $ cd aws-lc
+ $ mkdir build
+ $ cd build
+ $ cmake ..  -DBUILD_SHARED_LIBS=1 -DBUILD_TESTING=0 -DCMAKE_INSTALL_PREFIX=/usr/aws-lc
+ $ make -j8 && sudo make -j8 install
+```
+
+Build and test lws against it
+
+```
+ $ cd /projects/libwebsockets/build
+ $ cmake .. -DOPENSSL_LIBRARIES="/usr/aws-lc/lib64/libssl.so;\
+   /usr/aws-lc/lib64/libcrypto.so" \
+   -DOPENSSL_INCLUDE_DIRS=/usr/aws-lc/include \
+   -DLWS_WITH_AWSLC=1 -DCMAKE_BUILD_TYPE=DEBUG
+ $ make -j8 && sudo make install
+ $ /usr/local/bin/libwebsockets-test-server -s
+```
+
 
 @section lcap Linux Capabilities
 
@@ -277,6 +334,8 @@ plugins and lwsws.
  - If you are really restricted on memory, code size, or don't care about TLS
    speed, mbedTLS is a good choice: `cmake .. -DLWS_WITH_MBEDTLS=1`
  
+ - If you want an extremely lightweight, highly optimized TLS library with a minimal memory footprint and fast execution speed, BearSSL is a strong alternative: `cmake .. -DLWS_WITH_BEARSSL=1`. Note that BearSSL currently does not support DTLS.
+
  - If cpu and memory is not super restricted and you care about TLS speed,
    OpenSSL or a directly compatible variant like Boring SSL is a good choice.
  
@@ -297,12 +356,18 @@ Lws supports both almost the same, so instead of taking my word for it you are
 invited to try it both ways and see which the results (including, eg, binary
 size and memory usage as well as speed) suggest you use.
 
-NOTE: one major difference with mbedTLS is it does not load the system trust
-store by default.  That has advantages and disadvantages, but the disadvantage
-is you must provide the CA cert to lws built against mbedTLS for it to be able
-to validate it, ie, use -A with the test client.  The minimal test clients
-have the CA cert for warmcat.com and libwebsockets.org and use it if they see
-they were built with mbedTLS.
+NOTE: one major difference with mbedTLS and BearSSL is they do not natively load the OS trust
+store by default in the same way OpenSSL does.
+
+For mbedTLS, you must provide the CA cert to lws for it to be able
+to validate it, ie, use `-A` with the test client.
+
+For BearSSL, LWS implements a multi-cert PEM parser and fallback sequence to emulate OpenSSL's behavior:
+1. It checks the `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables for runtime overrides.
+2. It falls back to probing standard OS locations (e.g. `/etc/ssl/certs/ca-certificates.crt`).
+3. It defaults to the CMake-configured `LWS_OPENSSL_CLIENT_CERTS` if all else fails.
+
+This allows BearSSL to validate most system certificates out of the box on Linux. The minimal test clients also automatically include the CA cert for warmcat.com if they see they were built with mbedTLS or BearSSL.
 
 @section optee Building for OP-TEE
 
@@ -353,7 +418,7 @@ https://www.wolfssl.com/wolfSSL/Products-wolfssl.html
 It contains a OpenSSL compatibility layer which makes it possible to pretty
 much link to it instead of OpenSSL, giving a much smaller footprint.
 
-**NOTE**: wolfssl needs to be compiled using the `--enable-opensslextra` flag for
+**NOTE**: wolfssl needs to be compiled using the `--enable-libwebsockets` flag for
 this to work.
 
 @section wolf1 Compiling libwebsockets with wolfSSL

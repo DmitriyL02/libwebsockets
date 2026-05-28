@@ -71,6 +71,7 @@ enum {
 	LWS_TLS_SET_AUTH_PATH,
 	LWS_TLS_SET_CERT_PATH,
 	LWS_TLS_SET_KEY_PATH,
+	LWS_TLS_SET_ROOT_DOMAIN,
 
 	LWS_TLS_TOTAL_COUNT
 };
@@ -883,6 +884,37 @@ enum lws_callback_reasons {
 	 * timed out waiting for a response from AWS IoT.
 	 * Return nonzero to close the wsi.
 	 */
+
+	LWS_CALLBACK_MQTT_QOS2_RX_COMPLETE			= 213,
+	/**< When a QoS2 message has fully completed the transaction (PUBREL
+	 * received, PUBCOMP sent), this callback is generated.
+	 * `in` will point to the `uint16_t` packet ID that completed.
+	 */
+
+	LWS_CALLBACK_HTTP_INTERCEPTOR_CHECK			= 214,
+	/**< A mount has a interceptor_path enabled, this callback asks the
+	 * protocol bound to that mount if it is OK for this request to
+	 * proceed.  If returning 0, the request proceeds to the original
+	 * mount.  If nonzero, the request is diverted to the interceptor_path
+	 * mount.
+	 */
+
+	LWS_CALLBACK_GET_PSS_SIZE					= 215,
+	/**< Called when a protocol wants to specify its PSS size at runtime.
+	 *   If the protocol structure has per_session_data_size == 0, lws will
+	 *   call this to get the size to allocate for the session. */
+
+	LWS_CALLBACK_DHT_VERB_DISPATCH					= 216,
+	/**< Sent to the user protocol handler callback when a DHT message
+	 * carrying a registered verb has been matched by lws-dht.
+	 * `in` is a pointer to `struct lws_dht_verb_dispatch_args` containing
+	 * the context, message, and peer sockaddr information.
+	 */
+
+	LWS_CALLBACK_QT_SERVER_RECEIVE					= 217,
+	/**< QUIC transport payload received on server side */
+	LWS_CALLBACK_QT_CLIENT_RECEIVE					= 218,
+	/**< QUIC transport payload received on client side */
 
 	/****** add new things just above ---^ ******/
 

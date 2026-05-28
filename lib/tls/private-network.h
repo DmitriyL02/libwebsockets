@@ -27,6 +27,7 @@
 struct lws_context_per_thread;
 struct lws_tls_ops {
 	int (*fake_POLLIN_for_buffered)(struct lws_context_per_thread *pt);
+	void (*process_cleanup)(void);
 };
 
 struct lws_context_tls {
@@ -48,14 +49,45 @@ struct alpn_ctx {
 	uint8_t len;
 };
 
+struct lws_tls_ctx_ref {
+	lws_dll2_t list;
+	struct lws_vhost *vh;
+	lws_tls_ctx *ctx;
+	int refcount;
+};
+
 struct lws_vhost_tls {
 	lws_tls_ctx *ssl_ctx;
+	struct lws_tls_ctx_ref *active_ctx_ref;
+	lws_dll2_owner_t retired_ctx_list;
+
 	lws_tls_ctx *ssl_client_ctx;
 	struct lws_tls_client_reuse *tcr;
 	const char *alpn;
 	struct lws_tls_ss_pieces *ss; /* for acme tls certs */
-	char *alloc_cert_path;
-	char *key_path;
+	char *cfg_alloc_cert_path;
+	char *cfg_key_path;
+	char *cfg_ssl_cipher_list;
+	char *cfg_tls1_3_plus_cipher_list;
+	char *cfg_tls_client_cipher_list;
+	char *cfg_tls_ciphers_iana;
+	char *cfg_ssl_ca_filepath;
+	const void *cfg_server_ssl_cert_mem;
+	unsigned int cfg_server_ssl_cert_mem_len;
+	const void *cfg_server_ssl_privkey_mem;
+	unsigned int cfg_server_ssl_privkey_mem_len;
+	const void *cfg_server_ssl_ca_mem;
+	unsigned int cfg_server_ssl_ca_mem_len;
+#if defined(LWS_WITH_CLIENT)
+	const void *cfg_client_ssl_ca_mem;
+	unsigned int cfg_client_ssl_ca_mem_len;
+	const void *cfg_client_ssl_cert_mem;
+	unsigned int cfg_client_ssl_cert_mem_len;
+	const void *cfg_client_ssl_key_mem;
+	unsigned int cfg_client_ssl_key_mem_len;
+#endif
+	long ssl_options_set;
+	long ssl_options_clear;
 #if defined(LWS_WITH_MBEDTLS)
 	lws_tls_x509 *x509_client_CA;
 #endif
@@ -66,7 +98,7 @@ struct lws_vhost_tls {
 	int allow_non_ssl_on_ssl_port;
 	int ssl_info_event_mask;
 
-#if defined(LWS_WITH_MBEDTLS)
+#if defined(LWS_WITH_MBEDTLS) || defined(LWS_WITH_BEARSSL) || defined(LWS_WITH_GNUTLS)
 	uint32_t tls_session_cache_ttl;
 #endif
 
@@ -76,6 +108,7 @@ struct lws_vhost_tls {
 
 struct lws_lws_tls {
 	lws_tls_conn		*ssl;
+	struct lws_tls_ctx_ref  *ctx_ref;
 	lws_tls_bio		*client_bio;
 #if defined(LWS_TLS_SYNTHESIZE_CB)
 	lws_sorted_usec_list_t	sul_cb_synth;
@@ -85,9 +118,17 @@ struct lws_lws_tls {
 	lws_tls_kid_chain_t	kid_chain;
 #endif
 	struct lws_dll2		dll_pending_tls;
-	char			err_helper[32];
+	char			err_helper[64];
+
+	uint8_t			*quic_tp_recv;
+	size_t			quic_tp_recv_len;
+	const uint8_t		*quic_tp_send;
+	size_t			quic_tp_send_len;
+	lws_tls_quic_secret_cb	quic_secret_cb;
+
 	unsigned int		use_ssl;
 	unsigned int		redirect_to_https:1;
+	unsigned int		ssl_accept_in_bg:1;
 };
 
 
@@ -99,9 +140,13 @@ int LWS_WARN_UNUSED_RESULT
 lws_ssl_capable_write(struct lws *wsi, unsigned char *buf, size_t len);
 int LWS_WARN_UNUSED_RESULT
 lws_ssl_pending(struct lws *wsi);
+#if defined(LWS_WITH_SERVER)
 int LWS_WARN_UNUSED_RESULT
 lws_server_socket_service_ssl(struct lws *new_wsi, lws_sockfd_type accept_fd,
 				char is_pollin);
+#else
+#define lws_server_socket_service_ssl(_a, _b, _c) (0)
+#endif
 
 void
 lws_sess_cache_synth_cb(lws_sorted_usec_list_t *sul);
@@ -162,19 +207,41 @@ int
 lws_tls_server_vhost_backend_init(const struct lws_context_creation_info *info,
 			  struct lws_vhost *vhost, struct lws *wsi);
 int
+lws_tls_vhost_backend_create_ctx(struct lws_vhost *vhost);
+
+void
+lws_tls_vhost_backend_free_ctx(lws_tls_ctx *ctx);
+
+struct lws_tls_ctx_ref *
+lws_tls_ctx_ref_create(struct lws_vhost *vh, lws_tls_ctx *ctx);
+
+struct lws_tls_ctx_ref *
+lws_tls_ctx_ref_get(struct lws_vhost *vh);
+
+void
+lws_tls_ctx_ref_unref(struct lws_tls_ctx_ref *ref);
+
+void
+lws_tls_ctx_ref_destroy_all(struct lws_vhost *vhost);
+int
 lws_tls_server_new_nonblocking(struct lws *wsi, lws_sockfd_type accept_fd);
 
+#if defined(LWS_WITH_SERVER)
 enum lws_ssl_capable_status
 lws_tls_server_accept(struct lws *wsi);
-
+int
+lws_tls_server_accept_completed(struct lws *wsi, int n);
 enum lws_ssl_capable_status
 lws_tls_server_abort_connection(struct lws *wsi);
+#else
+#define lws_tls_server_accept(_a) (0)
+#define lws_tls_server_accept_completed(_a, _b) (0)
+#define lws_tls_server_abort_connection(_a) (0)
+#endif
 
 enum lws_ssl_capable_status
 __lws_tls_shutdown(struct lws *wsi);
 
-enum lws_ssl_capable_status
-lws_tls_client_connect(struct lws *wsi, char *errbuf, size_t len);
 int
 lws_tls_client_confirm_peer_cert(struct lws *wsi, char *ebuf, size_t ebuf_len);
 int

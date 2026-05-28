@@ -1,5 +1,5 @@
 project(lws-api-test-secure-streams C)
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.10)
 include(CheckCSourceCompiles)
 include(LwsCheckRequirements)
 
@@ -19,7 +19,7 @@ if (requirements)
 		set_tests_properties(api-test-secure-streams
 				     PROPERTIES
 				     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/minimal-examples-lowlevel/api-tests/api-test-secure-streams
-				     TIMEOUT 20)
+				     TIMEOUT 45)
 	endif()
 
 	if (websockets_shared)

@@ -14,17 +14,27 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_D,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 #include <time.h>
 
-#define LWS_PLUGIN_STATIC
-#include "../plugins/deaddrop/protocol_lws_deaddrop.c"
-
-static struct lws_protocols protocols[] = {
-       LWS_PLUGIN_PROTOCOL_DEADDROP,
-       LWS_PROTOCOL_LIST_TERM
+#if defined(LWS_WITH_PLUGINS)
+static const char * const plugin_dirs[] = {
+	LWS_PLUGIN_DIR "/",
+	NULL
 };
+#endif
 
 
 static int interrupted;
@@ -46,70 +56,37 @@ static struct lws_protocol_vhost_options em3 = {
 /* wire up /upload URLs to the plugin (protected by basic auth) */
 
 static const struct lws_http_mount mount_upload = {
-	/* .mount_next */		NULL,
-	/* .mountpoint */		"/upload",	/* mountpoint URL */
-	/* .origin */			"lws-deaddrop",
-	/* .def */			"",
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_CALLBACK,
-	/* .mountpoint_len */		7,		/* char count */
-	/* .basic_auth_login_file */	"./ba-passwords",
+	.mountpoint			= "/upload",		/* mountpoint URL */
+	.protocol			= "lws-deaddrop",
+	.def				= "",
+	.origin_protocol		= LWSMPRO_CALLBACK,
+	.mountpoint_len			= 7,			/* char count */
+	.basic_auth_login_file		= "./ba-passwords",
 };
 
 /* wire up /get URLs to the upload directory (protected by basic auth) */
 
 static const struct lws_http_mount mount_get = {
-	/* .mount_next */		&mount_upload,	/* linked-list "next" */
-	/* .mountpoint */		"/get",	/* mountpoint URL */
-	/* .origin */			"./uploads",
-	/* .def */			"",
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		&extra_mimetypes,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_FILE, /* dynamic */
-	/* .mountpoint_len */		4,		/* char count */
-	/* .basic_auth_login_file */	"./ba-passwords",
+	.mount_next			= &mount_upload,	/* linked-list "next" */
+	.mountpoint			= "/get",		/* mountpoint URL */
+	.origin				= "./uploads",
+	.def				= "",
+	.extra_mimetypes		= &extra_mimetypes,
+	.origin_protocol		= LWSMPRO_FILE, 	/* dynamic */
+	.mountpoint_len			= 4,			/* char count */
+	.basic_auth_login_file		= "./ba-passwords",
 };
 
 /* wire up / to serve from ./mount-origin (protected by basic auth) */
 
 static const struct lws_http_mount mount = {
-	/* .mount_next */		&mount_get,	/* linked-list "next" */
-	/* .mountpoint */		"/",		/* mountpoint URL */
-	/* .origin */			"./mount-origin", /* serve from dir */
-	/* .def */			"index.html",	/* default filename */
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
-	/* .mountpoint_len */		1,		/* char count */
-	/* .basic_auth_login_file */	"./ba-passwords",
+	.mount_next			= &mount_get,		/* linked-list "next" */
+	.mountpoint			= "/",			/* mountpoint URL */
+	.origin				= "./mount-origin",	/* serve from dir */
+	.def				= "index.html",		/* default filename */
+	.origin_protocol		= LWSMPRO_FILE,		/* files in a dir */
+	.mountpoint_len			= 1,			/* char count */
+	.basic_auth_login_file		= "./ba-passwords",
 };
 
 /* pass config options to the deaddrop plugin using pvos */
@@ -139,10 +116,17 @@ int main(int argc, const char **argv)
 	struct lws_context *context;
 	const char *p;
 	int n = 0, logs = LLL_USER | LLL_ERR | LLL_WARN | LLL_NOTICE;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	signal(SIGINT, sigint_handler);
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
@@ -152,7 +136,9 @@ int main(int argc, const char **argv)
 	info.port = 7681;
 	info.mounts = &mount;
 	info.pvo = &pvo;
-	info.protocols = protocols;
+#if defined(LWS_WITH_PLUGINS)
+	info.plugin_dirs = plugin_dirs;
+#endif
 	info.error_document_404 = "/404.html";
 	info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT |
 		LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
@@ -164,6 +150,11 @@ int main(int argc, const char **argv)
 	context = lws_create_context(&info);
 	if (!context) {
 		lwsl_err("lws init failed\n");
+		return 1;
+	}
+
+	if (!lws_vhost_name_to_protocol(lws_get_vhost_by_name(context, "default"), "lws-deaddrop")) {
+		lwsl_err("lws-deaddrop plugin required\n");
 		return 1;
 	}
 

@@ -71,7 +71,7 @@ lws_read_h1(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 		}
 		lwsl_parser("issuing %d bytes to parser\n", (int)len);
 #if defined(LWS_ROLE_WS) && defined(LWS_WITH_CLIENT)
-		if (lws_ws_handshake_client(wsi, &buf, (size_t)len))
+		if (lws_ws_handshake_client(wsi, &buf, (size_t)len) == LWS_HPI_RET_PLEASE_CLOSE_ME)
 			goto bail;
 #endif
 		last_char = buf;
@@ -259,7 +259,7 @@ postbody_completion:
 ws_mode:
 #if defined(LWS_WITH_CLIENT) && defined(LWS_ROLE_WS)
 		// lwsl_notice("%s: ws_mode\n", __func__);
-		if (lws_ws_handshake_client(wsi, &buf, (size_t)len))
+		if (lws_ws_handshake_client(wsi, &buf, (size_t)len) == LWS_HPI_RET_PLEASE_CLOSE_ME)
 			goto bail;
 #endif
 #if defined(LWS_ROLE_WS)
@@ -327,14 +327,15 @@ bail:
 	return -1;
 }
 #if defined(LWS_WITH_SERVER)
-static int
+static lws_handling_result_t
 lws_h1_server_socket_service(struct lws *wsi, struct lws_pollfd *pollfd)
 {
 	struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
 	struct lws_tokens ebuf;
 	int n, buffered;
 
-	if (lwsi_state(wsi) == LRS_DEFERRING_ACTION)
+	if (lwsi_state(wsi) == LRS_DEFERRING_ACTION ||
+	    wsi->http.deferred_transaction_completed)
 		goto try_pollout;
 
 	/* any incoming data ready? */
@@ -416,9 +417,24 @@ lws_h1_server_socket_service(struct lws *wsi, struct lws_pollfd *pollfd)
 
 		case LWS_SSL_CAPABLE_ERROR:
 			goto fail;
-		case LWS_SSL_CAPABLE_MORE_SERVICE:
+		case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
+			if (wsi->pending_timeout)
+				lws_set_timeout(wsi, (enum pending_timeout)wsi->pending_timeout,
+						wsi->pending_timeout == PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE ?
+						(int)lws_wsi_keepalive_timeout_eff(wsi) : (int)wsi->a.context->timeout_secs);
+			goto try_pollout;
+		case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
+			if (wsi->pending_timeout)
+				lws_set_timeout(wsi, (enum pending_timeout)wsi->pending_timeout,
+						wsi->pending_timeout == PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE ?
+						(int)lws_wsi_keepalive_timeout_eff(wsi) : (int)wsi->a.context->timeout_secs);
 			goto try_pollout;
 		}
+
+		if (wsi->pending_timeout)
+			lws_set_timeout(wsi, (enum pending_timeout)wsi->pending_timeout,
+					wsi->pending_timeout == PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE ?
+					(int)lws_wsi_keepalive_timeout_eff(wsi) : (int)wsi->a.context->timeout_secs);
 
 		/* just ignore incoming if waiting for close */
 		if (lwsi_state(wsi) == LRS_FLUSHING_BEFORE_CLOSE) {
@@ -439,13 +455,25 @@ lws_h1_server_socket_service(struct lws *wsi, struct lws_pollfd *pollfd)
 		 * Otherwise give it to whoever wants it according to the
 		 * connection state
 		 */
+#if defined(LWS_WITH_LATENCY)
+		lws_usec_t _h1_read_start = lws_now_usecs();
+#endif
 #if defined(LWS_ROLE_H2)
 		if (lwsi_role_h2(wsi) && lwsi_state(wsi) != LRS_BODY)
 			n = lws_read_h2(wsi, ebuf.token, (unsigned int)ebuf.len);
 		else
 #endif
 			n = lws_read_h1(wsi, ebuf.token, (unsigned int)ebuf.len);
+
+#if defined(LWS_WITH_LATENCY)
+		{
+			unsigned int ms = (unsigned int)((lws_now_usecs() - _h1_read_start) / 1000);
+			if (ms > 2)
+				lws_latency_note(pt, _h1_read_start, 2000, "h1read:%dms", ms);
+		}
+#endif
 		if (n < 0) /* we closed wsi */
+
 			return LWS_HPI_RET_WSI_ALREADY_DIED;
 
 		// lwsl_notice("%s: consumed %d\n", __func__, n);
@@ -513,6 +541,10 @@ try_pollout:
 	if (!wsi->hdr_parsing_completed)
 		return LWS_HPI_RET_HANDLED;
 
+	if (lwsi_state(wsi) == LRS_AWAITING_FILE_READ) {
+		return LWS_HPI_RET_HANDLED;
+	}
+
 	if (lwsi_state(wsi) != LRS_ISSUING_FILE) {
 
 		if (lws_has_buffered_out(wsi)) {
@@ -559,10 +591,12 @@ fail:
 }
 #endif
 
-static int
+static lws_handling_result_t
 rops_handle_POLLIN_h1(struct lws_context_per_thread *pt, struct lws *wsi,
 		       struct lws_pollfd *pollfd)
 {
+	// lwsl_notice("%s: %s state 0x%x, revents %d\n", __func__, lws_wsi_tag(wsi), lwsi_state(wsi), pollfd->revents);
+
 	if (lwsi_state(wsi) == LRS_IDLING) {
 		uint8_t buf[1];
 		int rlen;
@@ -631,7 +665,7 @@ rops_handle_POLLIN_h1(struct lws_context_per_thread *pt, struct lws *wsi,
 
 #if defined(LWS_WITH_SERVER)
 	if (!lwsi_role_client(wsi)) {
-		int n;
+		lws_handling_result_t hr;
 
 		lwsl_debug("%s: %s: wsistate 0x%x\n", __func__, lws_wsi_tag(wsi),
 			   (unsigned int)wsi->wsistate);
@@ -640,9 +674,22 @@ rops_handle_POLLIN_h1(struct lws_context_per_thread *pt, struct lws *wsi,
 		    !lws_buflist_total_len(&wsi->buflist))
 			return LWS_HPI_RET_PLEASE_CLOSE_ME;
 
-		n = lws_h1_server_socket_service(wsi, pollfd);
-		if (n != LWS_HPI_RET_HANDLED)
-			return n;
+#if defined(LWS_WITH_LATENCY)
+		lws_usec_t _h1s_start = lws_now_usecs();
+#endif
+
+		hr = lws_h1_server_socket_service(wsi, pollfd);
+
+#if defined(LWS_WITH_LATENCY)
+		{
+			unsigned int ms = (unsigned int)((lws_now_usecs() - _h1s_start) / 1000);
+			if (ms > 2)
+				lws_latency_note(pt, _h1s_start, 2000, "h1sv:%dms", ms);
+		}
+#endif
+
+		if (hr != LWS_HPI_RET_HANDLED)
+			return hr;
 		if (lwsi_state(wsi) != LRS_SSL_INIT)
 			if (lws_server_socket_service_ssl(wsi,
 							  LWS_SOCK_INVALID,
@@ -709,7 +756,7 @@ rops_handle_POLLIN_h1(struct lws_context_per_thread *pt, struct lws *wsi,
 	return LWS_HPI_RET_HANDLED;
 }
 
-static int
+static lws_handling_result_t
 rops_handle_POLLOUT_h1(struct lws *wsi)
 {
 
@@ -753,7 +800,7 @@ rops_handle_POLLOUT_h1(struct lws *wsi)
 				return LWS_HP_RET_DROP_POLLOUT;
 			}
 
-			lwsl_wsi_err(wsi, "nothing to send");
+			lwsl_wsi_info(wsi, "nothing to send");
 #if defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2)
 			/* prepare ourselves to do the parsing */
 			wsi->http.ah->parser_state = WSI_TOKEN_NAME_PART;
@@ -774,6 +821,10 @@ rops_handle_POLLOUT_h1(struct lws *wsi)
 
 	if (lwsi_role_client(wsi))
 		return LWS_HP_RET_USER_SERVICE;
+
+	if (lwsi_state(wsi) == LRS_AWAITING_FILE_READ) {
+		return LWS_HP_RET_DROP_POLLOUT;
+	}
 
 	return LWS_HP_RET_BAIL_OK;
 }
@@ -797,7 +848,20 @@ rops_write_role_protocol_h1(struct lws *wsi, unsigned char *buf, size_t len,
 			   LWS_HTTP_CHUNK_HDR_MAX_SIZE -
 			   LWS_HTTP_CHUNK_TRL_MAX_SIZE;
 
+#if defined(LWS_WITH_LATENCY)
+		lws_usec_t _h1comp_start = lws_now_usecs();
+#endif
+
 		n = lws_http_compression_transform(wsi, buf, len, wp, &out, &o);
+
+#if defined(LWS_WITH_LATENCY)
+		{
+			unsigned int ms = (unsigned int)((lws_now_usecs() - _h1comp_start) / 1000);
+			if (ms > 2)
+				lws_latency_note((&wsi->a.context->pt[(int)wsi->tsi]), _h1comp_start, 2000, "h1comp:%dms", ms);
+		}
+#endif
+
 		if (n)
 			return n;
 
@@ -971,11 +1035,20 @@ static const char * const http_methods[] = {
 	"GET", "POST", "OPTIONS", "HEAD", "PUT", "PATCH", "DELETE", "CONNECT"
 };
 
+int
+_lws_is_http_method(const char *method)
+{
+	if (method)
+		for (int n = 0; n < (int)LWS_ARRAY_SIZE(http_methods); n++)
+			if (!strcmp(method, http_methods[n]))
+				return 1;
+
+	return 0;
+}
+
 static int
 rops_client_bind_h1(struct lws *wsi, const struct lws_client_connect_info *i)
 {
-	int n;
-
 	if (!i) {
 		/* we are finalizing an already-selected role */
 
@@ -1046,10 +1119,8 @@ rops_client_bind_h1(struct lws *wsi, const struct lws_client_connect_info *i)
 	}
 
 	/* if a recognized http method, bind to it */
-
-	for (n = 0; n < (int)LWS_ARRAY_SIZE(http_methods); n++)
-		if (!strcmp(i->method, http_methods[n]))
-			goto bind_h1;
+	if (_lws_is_http_method(i->method))
+		goto bind_h1;
 
 	/* other roles may bind to it */
 

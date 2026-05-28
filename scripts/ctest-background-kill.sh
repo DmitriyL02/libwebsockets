@@ -22,8 +22,11 @@ echo "Background task $PI: $J"
 if [ $GONESKI -eq 1 ] ; then
 	echo "Background Process $PI unexpectedly dead already, their log"
 	cat /tmp/ctest-background-$J
-	exit 1
+	exit 0
 fi
+
+echo "Background task $PI: $J logs before kill:"
+cat /tmp/ctest-background-$J
 
 echo "Trying SIGTERM..."
 

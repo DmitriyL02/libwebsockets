@@ -26,7 +26,8 @@ enum enum_genec_alg {
 	LEGENEC_UNKNOWN,
 
 	LEGENEC_ECDH,
-	LEGENEC_ECDSA
+	LEGENEC_ECDSA,
+	LEGENEC_EDDSA
 };
 
 struct lws_genec_ctx {
@@ -35,6 +36,20 @@ struct lws_genec_ctx {
 		mbedtls_ecdh_context *ctx_ecdh;
 		mbedtls_ecdsa_context *ctx_ecdsa;
 	} u;
+#elif defined(LWS_WITH_SCHANNEL)
+	struct {
+		void *hAlg;
+		void *hKey;
+		void *hKeyPeer; /* For ECDH peer public key */
+	} u;
+#elif defined(LWS_WITH_GNUTLS)
+	gnutls_privkey_t priv;
+	gnutls_pubkey_t pub;
+#elif defined(LWS_WITH_BEARSSL)
+	br_ec_public_key pub;
+	br_ec_private_key priv;
+	void *kbuf_priv;
+	void *kbuf_pub;
 #else
 	EVP_PKEY_CTX *ctx[2];
 #endif
@@ -76,7 +91,7 @@ struct lws_ec_curves {
  *
  * Initializes a genecdh
  */
-LWS_VISIBLE int
+LWS_VISIBLE LWS_EXTERN int
 lws_genecdh_create(struct lws_genec_ctx *ctx, struct lws_context *context,
 		   const struct lws_ec_curves *curve_table);
 
@@ -89,7 +104,7 @@ lws_genecdh_create(struct lws_genec_ctx *ctx, struct lws_context *context,
  * Applies an EC key to one side or the other of an ECDH ctx
  */
 LWS_VISIBLE LWS_EXTERN int
-lws_genecdh_set_key(struct lws_genec_ctx *ctx, struct lws_gencrypto_keyelem *el,
+lws_genecdh_set_key(struct lws_genec_ctx *ctx, const struct lws_gencrypto_keyelem *el,
 		    enum enum_lws_dh_side side);
 
 /** lws_genecdh_new_keypair() - Create a genec with a new public / private key
@@ -122,7 +137,7 @@ lws_genecdh_compute_shared_secret(struct lws_genec_ctx *ctx, uint8_t *ss,
  *
  * Initializes a genecdh
  */
-LWS_VISIBLE int
+LWS_VISIBLE LWS_EXTERN int
 lws_genecdsa_create(struct lws_genec_ctx *ctx, struct lws_context *context,
 		    const struct lws_ec_curves *curve_table);
 
@@ -199,7 +214,74 @@ lws_genecdsa_hash_sign_jws(struct lws_genec_ctx *ctx, const uint8_t *in,
 			   uint8_t *sig, size_t sig_len);
 
 
-/* Apis that apply to both ECDH and ECDSA */
+/* EdDSA-specific apis */
+
+/** lws_geneddsa_create() - Create a geneddsa
+ *
+ * \param ctx: your genec context
+ * \param context: your lws_context (for RNG access)
+ * \param curve_table: NULL, enabling ED25519 and ED448, or a replacement
+ *		       struct lws_ec_curves array, terminated by an entry with
+ *		       .name = NULL, of curves you want to allow
+ *
+ * Initializes a geneddsa
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_geneddsa_create(struct lws_genec_ctx *ctx, struct lws_context *context,
+		    const struct lws_ec_curves *curve_table);
+
+/** lws_geneddsa_new_keypair() - Create a geneddsa with a new public / private key
+ *
+ * \param ctx: your genec context
+ * \param curve_name: an EdDSA curve name, like "ED25519"
+ * \param el: array pf LWS_GENCRYPTO_OKP_KEYEL_COUNT key elements to take the new key
+ *
+ * Creates a geneddsa with a newly minted EdDSA public / private key
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_geneddsa_new_keypair(struct lws_genec_ctx *ctx, const char *curve_name,
+			 struct lws_gencrypto_keyelem *el);
+
+/** lws_geneddsa_set_key() - Apply an OKP key to an eddsa context
+ *
+ * \param ctx: your geneddsa context
+ * \param el: your key elements
+ *
+ * Applies an OKP key to an eddsa context
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_geneddsa_set_key(struct lws_genec_ctx *ctx,
+		     const struct lws_gencrypto_keyelem *el);
+
+/** lws_geneddsa_hash_sig_verify_jws() - Verifies a JWS EdDSA signature on a given payload
+ *
+ * \param ctx: your struct lws_genrsa_ctx
+ * \param in: raw payload
+ * \param in_len: raw payload length
+ * \param sig: pointer to the signature we received with the payload
+ * \param sig_len: length of the signature we are checking in bytes
+ *
+ * Returns <0 for error, or 0 if signature matches the payload + key..
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_geneddsa_hash_sig_verify_jws(struct lws_genec_ctx *ctx, const uint8_t *in,
+				 size_t in_len, const uint8_t *sig, size_t sig_len);
+
+/** lws_geneddsa_hash_sign_jws() - Creates a JWS EdDSA signature for a payload you provide
+ *
+ * \param ctx: your struct lws_genrsa_ctx
+ * \param in: raw payload to sign
+ * \param in_len: length of the payload
+ * \param sig: pointer to buffer to take signature
+ * \param sig_len: length of the buffer
+ *
+ * Returns <0 for error, or >=0 for success.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_geneddsa_hash_sign_jws(struct lws_genec_ctx *ctx, const uint8_t *in,
+			   size_t in_len, uint8_t *sig, size_t sig_len);
+
+/* Apis that apply to ECDH, ECDSA and EdDSA */
 
 LWS_VISIBLE LWS_EXTERN void
 lws_genec_destroy(struct lws_genec_ctx *ctx);

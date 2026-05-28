@@ -102,15 +102,19 @@ static int
 lws_get_addresses(struct lws_vhost *vh, void *ads, char *name,
 		  int name_len, char *rip, int rip_len)
 {
-	struct addrinfo ai, *res;
 	struct sockaddr_in addr4;
 
+	if (!rip)
+		return -1;
+
 	rip[0] = '\0';
-	name[0] = '\0';
+	if (name)
+		name[0] = '\0';
 	addr4.sin_family = AF_UNSPEC;
 
 #ifdef LWS_WITH_IPV6
-	if (LWS_IPV6_ENABLED(vh)) {
+	if (LWS_IPV6_ENABLED(vh) &&
+	    ((struct sockaddr *)ads)->sa_family == AF_INET6) {
 		if (!lws_plat_inet_ntop(AF_INET6,
 					&((struct sockaddr_in6 *)ads)->sin6_addr,
 					rip, (socklen_t)rip_len)) {
@@ -126,53 +130,37 @@ lws_get_addresses(struct lws_vhost *vh, void *ads, char *name,
 		if (strncmp(rip, "::ffff:", 7) == 0)
 			memmove(rip, rip + 7, strlen(rip) - 6);
 
-		getnameinfo((struct sockaddr *)ads, sizeof(struct sockaddr_in6),
-			    name,
+		if (name) {
+			getnameinfo((struct sockaddr *)ads, sizeof(struct sockaddr_in6),
+				    name,
 #if defined(__ANDROID__)
-			    (size_t)name_len,
+				    (size_t)name_len,
 #else
-			    (socklen_t)name_len,
+				    (socklen_t)name_len,
 #endif
-			    NULL, 0, 0);
+				    NULL, 0, 0);
+		}
 
 		return 0;
 	} else
 #endif
 	{
-		struct addrinfo *result;
+		addr4.sin_family = AF_INET;
+		addr4.sin_addr = ((struct sockaddr_in *)ads)->sin_addr;
 
-		memset(&ai, 0, sizeof ai);
-		ai.ai_family = PF_UNSPEC;
-		ai.ai_socktype = SOCK_STREAM;
 #if !defined(LWS_PLAT_FREERTOS)
-		if (getnameinfo((struct sockaddr *)ads,
-				sizeof(struct sockaddr_in),
-				name,
+		if (name) {
+			getnameinfo((struct sockaddr *)ads,
+					sizeof(struct sockaddr_in),
+					name,
 #if defined(__ANDROID__)
-				(size_t)name_len,
+					(size_t)name_len,
 #else
-				(socklen_t)name_len,
+					(socklen_t)name_len,
 #endif
-				NULL, 0, 0))
-			return -1;
-#endif
-
-		if (getaddrinfo(name, NULL, &ai, &result))
-			return -1;
-
-		res = result;
-		while (addr4.sin_family == AF_UNSPEC && res) {
-			switch (res->ai_family) {
-			case AF_INET:
-				addr4.sin_addr =
-				 ((struct sockaddr_in *)res->ai_addr)->sin_addr;
-				addr4.sin_family = AF_INET;
-				break;
-			}
-
-			res = res->ai_next;
+					NULL, 0, 0);
 		}
-		freeaddrinfo(result);
+#endif
 	}
 
 	if (addr4.sin_family == AF_UNSPEC)
@@ -212,7 +200,7 @@ lws_get_peer_simple(struct lws *wsi, char *name, size_t namelen)
 }
 #endif
 
-void
+int
 lws_get_peer_addresses(struct lws *wsi, lws_sockfd_type fd, char *name,
 		       int name_len, char *rip, int rip_len)
 {
@@ -224,8 +212,13 @@ lws_get_peer_addresses(struct lws *wsi, lws_sockfd_type fd, char *name,
 	struct sockaddr_in sin4;
 	void *p;
 
-	rip[0] = '\0';
-	name[0] = '\0';
+	if (!lws_socket_is_valid(fd))
+		return 1;
+
+	if (rip)
+		rip[0] = '\0';
+	if (name)
+		name[0] = '\0';
 
 #ifdef LWS_WITH_IPV6
 	if (LWS_IPV6_ENABLED(wsi->a.vhost)) {
@@ -245,19 +238,20 @@ lws_get_peer_addresses(struct lws *wsi, lws_sockfd_type fd, char *name,
 		lwsl_wsi_warn(wsi, "getpeername: %s",
 			lws_errno_describe(LWS_ERRNO, t16, sizeof(t16)));
 #endif
-		goto bail;
+		return 1;
 	}
 
-	lws_get_addresses(wsi->a.vhost, p, name, name_len, rip, rip_len);
+	return lws_get_addresses(wsi->a.vhost, p, name, name_len, rip, rip_len);
 
-bail:
-#endif
+#else
 	(void)wsi;
 	(void)fd;
 	(void)name;
 	(void)name_len;
 	(void)rip;
 	(void)rip_len;
+	return 0;
+#endif
 }
 
 
@@ -311,8 +305,12 @@ lws_socket_bind(struct lws_vhost *vhost, struct lws *wsi,
 			         iface);
 			return LWS_ITOSA_NOT_EXIST;
 		}
+#if defined(WIN32)
+		n = (int)(sizeof(uint16_t) + strlen(iface) + 1);
+#else
 		n = (int)(sizeof(uint16_t) + strlen(iface));
-		strcpy(serv_unix.sun_path, iface);
+#endif
+		lws_strncpy(serv_unix.sun_path, iface, sizeof(serv_unix.sun_path) - 1);
 		if (serv_unix.sun_path[0] == '@')
 			serv_unix.sun_path[0] = '\0';
 		else
@@ -381,6 +379,18 @@ lws_socket_bind(struct lws_vhost *vhost, struct lws *wsi,
 	/* just checking for the interface extant */
 	if (sockfd == LWS_SOCK_INVALID)
 		return LWS_ITOSA_USABLE;
+#if defined(LWS_WITH_BINDTODEVICE)
+	if (af != AF_UNIX && iface) {
+		if (setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, iface, (socklen_t)strlen(iface)) < 0) {
+#if !defined(LWS_WITH_NO_LOGS)
+			int _lws_errno = LWS_ERRNO;
+			lwsl_wsi_warn(wsi, "setsockopt bind to device %s error fd %d (%d)",
+					  iface, sockfd, _lws_errno);
+#endif
+	/* Root only, non-fatal, continue here. */
+		}
+	}
+#endif
 
 	n = bind(sockfd, v, (socklen_t)n);
 #ifdef LWS_WITH_UNIX_SOCK
@@ -451,10 +461,10 @@ lws_socket_bind(struct lws_vhost *vhost, struct lws *wsi,
 
 #ifndef LWS_PLAT_OPTEE
 	if (getsockname(sockfd, (struct sockaddr *)psin, &len) == -1) {
-#if !defined(LWS_WITH_NO_LOGS)
+#if (_LWS_ENABLED_LOGS & LLL_INFO)
 		char t16[16];
 
-		lwsl_wsi_warn(wsi, "getsockname: %s",
+		lwsl_wsi_info(wsi, "getsockname: %s",
 			      lws_errno_describe(LWS_ERRNO, t16, sizeof(t16)));
 #endif
 	} else
@@ -471,13 +481,15 @@ lws_socket_bind(struct lws_vhost *vhost, struct lws *wsi,
 		}
 #endif
 
+#if (_LWS_ENABLED_LOGS & LLL_INFO)
 		{
 			char buf[72];
 			lws_sa46_write_numeric_address((lws_sockaddr46 *)psin,
 							buf, sizeof(buf));
 
-			lwsl_vhost_notice(vhost, "source ads %s", buf);
+			lwsl_vhost_info(vhost, "source ads %s", buf);
 		}
+#endif
 
 	return port;
 }
@@ -534,7 +546,7 @@ lws_retry_sul_schedule(struct lws_context *context, int tid,
 	if (!conceal)
 		return 1;
 
-	lwsl_cx_info(context, "sul %p: scheduling retry in %dms", sul, (int)ms);
+	lwsl_cx_debug(context, "sul %p: scheduling retry in %dms", sul, (int)ms);
 
 	lws_sul_schedule(context, tid, sul, cb, (int64_t)(ms * 1000));
 
@@ -737,7 +749,7 @@ lws_parse_numeric_address(const char *ads, uint8_t *result, size_t max_len)
 {
 	struct lws_tokenize ts;
 	uint8_t *orig = result, temp[16];
-	int sects = 0, ipv6 = !!strchr(ads, ':'), skip_point = -1, dm = 0;
+	int sects = 0, ipv6 = !!(char *)strchr(ads, ':'), skip_point = -1, dm = 0;
 	char t[5];
 	size_t n;
 	long u;
@@ -1104,3 +1116,152 @@ lws_system_get_state_manager(struct lws_context *context)
 	return &context->mgr_system;
 }
 #endif
+
+int
+lws_parse_mac(const char *ads, uint8_t *result_6_bytes)
+{
+	uint8_t *p = result_6_bytes;
+	struct lws_tokenize ts;
+	char t[3];
+	size_t n;
+	long u;
+
+	lws_tokenize_init(&ts, ads, LWS_TOKENIZE_F_NO_INTEGERS |
+				    LWS_TOKENIZE_F_MINUS_NONTERM);
+	ts.len = strlen(ads);
+
+	do {
+		ts.e = (int8_t)lws_tokenize(&ts);
+		switch (ts.e) {
+		case LWS_TOKZE_TOKEN:
+			if (ts.token_len != 2)
+				return -1;
+			if (p - result_6_bytes == 6)
+				return -2;
+			t[0] = ts.token[0];
+			t[1] = ts.token[1];
+			t[2] = '\0';
+			for (n = 0; n < 2; n++)
+				if (t[n] < '0' || t[n] > 'f' ||
+				    (t[n] > '9' && t[n] < 'A') ||
+				    (t[n] > 'F' && t[n] < 'a'))
+					return -1;
+			u = strtol(t, NULL, 16);
+			if (u > 0xff)
+				return -5;
+			*p++ = (uint8_t)u;
+			break;
+
+		case LWS_TOKZE_DELIMITER:
+			if (*ts.token != ':')
+				return -10;
+			if (p - result_6_bytes > 5)
+				return -11;
+			break;
+
+		case LWS_TOKZE_ENDED:
+			if (p - result_6_bytes != 6)
+				return -12;
+			return 0;
+
+		default:
+			lwsl_err("%s: malformed mac\n", __func__);
+
+			return -13;
+		}
+	} while (ts.e > 0);
+
+	lwsl_err("%s: ended on e %d\n", __func__, ts.e);
+
+	return -14;
+}
+
+int
+lws_is_lan_address(const char *ads)
+{
+	lws_sockaddr46 sa46;
+
+	if (!ads)
+		return 0;
+
+	if (lws_sa46_parse_numeric_address(ads, &sa46) < 0)
+		return 0;
+
+	if (sa46.sa4.sin_family == AF_INET) {
+		uint8_t *p = (uint8_t *)&sa46.sa4.sin_addr.s_addr;
+
+		/* 10.0.0.0/8 */
+		if (p[0] == 10)
+			return 1;
+		/* 172.16.0.0/12 */
+		if (p[0] == 172 && (p[1] >= 16 && p[1] <= 31))
+			return 1;
+		/* 192.168.0.0/16 */
+		if (p[0] == 192 && p[1] == 168)
+			return 1;
+		/* 127.0.0.0/8 */
+		if (p[0] == 127)
+			return 1;
+	} else if (sa46.sa4.sin_family == AF_INET6) {
+#if defined(LWS_WITH_IPV6)
+		uint8_t *p = (uint8_t *)&sa46.sa6.sin6_addr.s6_addr;
+
+		/* fc00::/7 */
+		if ((p[0] & 0xfe) == 0xfc)
+			return 1;
+		/* fe80::/10 */
+		if (p[0] == 0xfe && (p[1] & 0xc0) == 0x80)
+			return 1;
+		/* ::1 */
+		if (p[0] == 0 && p[1] == 0 && p[2] == 0 && p[3] == 0 &&
+		    p[4] == 0 && p[5] == 0 && p[6] == 0 && p[7] == 0 &&
+		    p[8] == 0 && p[9] == 0 && p[10] == 0 && p[11] == 0 &&
+		    p[12] == 0 && p[13] == 0 && p[14] == 0 && p[15] == 1)
+			return 1;
+#endif
+	}
+
+	return 0;
+}
+
+int
+lws_parse_cidr(const char *cidr, lws_sockaddr46 *sa46, int *len)
+{
+	char buf[64], *p;
+	int n;
+
+	lws_strncpy(buf, cidr, sizeof(buf));
+	p = (char *)strchr(buf, '/');
+
+	if (!p) {
+		*len = -1; /* no mask */
+	} else {
+		*p++ = '\0';
+		*len = atoi(p);
+	}
+
+	n = lws_sa46_parse_numeric_address(buf, sa46);
+	if (n)
+		return n;
+
+	if (*len == -1)
+		*len = sa46->sa4.sin_family == AF_INET6 ? 128 : 32;
+
+	return 0;
+}
+
+int
+lws_is_local_address(const char *ads)
+{
+	if (!ads)
+		return 0;
+
+	if (!strcmp(ads, "127.0.0.1") ||
+	    !strcmp(ads, "::1") ||
+	    !strcmp(ads, "localhost") ||
+	    !strcmp(ads, "localhost4") ||
+	    !strcmp(ads, "localhost6"))
+		return 1;
+
+	return 0;
+}

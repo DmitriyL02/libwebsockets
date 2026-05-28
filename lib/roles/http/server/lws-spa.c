@@ -131,7 +131,7 @@ lws_urldecode_s_create(struct lws_spa *spa, struct lws *wsi, char *out,
 			s->multipart_form_data = 1;
 			s->state = MT_LOOK_BOUND_IN;
 			s->mp = 2;
-			p = strstr(buf, "boundary=");
+			p = (char *)strstr(buf, "boundary=");
 			if (p) {
 				p += 9;
 				s->mime_boundary[m++] = '\x0d';
@@ -161,7 +161,7 @@ lws_urldecode_s_process(struct lws_urldecode_stateful *s, const char *in,
 	char c;
 
 	while (len--) {
-		if (s->pos == s->out_len - s->mp - 1) {
+		if (s->pos >= s->out_len - s->mp - 1) {
 			if (s->output(s->data, s->name, &s->out, s->pos,
 				      LWS_UFS_CONTENT))
 				return -1;
@@ -274,10 +274,34 @@ retry_as_first:
 				if (!s->boundary_real_crlf)
 					n = 2;
 				if (s->mp >= n) {
-					memcpy(s->out + s->pos,
-					       s->mime_boundary + n,
-					       (unsigned int)(s->mp - n));
-					s->pos += s->mp;
+					int extra = s->mp - n;
+					int ext_pos = 0;
+
+					while (extra) {
+						int chunk;
+
+						if (s->pos >= s->out_len - 1) {
+							if (s->output(s->data, s->name,
+								      &s->out, s->pos,
+								      LWS_UFS_CONTENT))
+								return -1;
+							s->pos = 0;
+							if (s->out_len <= 1)
+								return -1;
+						}
+
+						chunk = extra;
+						if (chunk > s->out_len - s->pos - 1)
+							chunk = s->out_len - s->pos - 1;
+
+						memcpy(s->out + s->pos,
+						       s->mime_boundary + n + ext_pos,
+						       (unsigned int)chunk);
+
+						s->pos += chunk;
+						ext_pos += chunk;
+						extra -= chunk;
+					}
 					s->mp = 0;
 					goto retry_as_first;
 				}
@@ -586,7 +610,7 @@ lws_spa_create_via_info(struct lws *wsi, const lws_spa_create_info_t *i)
 	if (!spa->storage)
 		goto bail2;
 
-	spa->end = spa->storage + i->max_storage - 1;
+	spa->end = spa->storage + spa->i.max_storage - 1;
 
 	if (i->count_params) {
 		if (i->ac)
@@ -599,7 +623,7 @@ lws_spa_create_via_info(struct lws *wsi, const lws_spa_create_info_t *i)
 			goto bail3;
 	}
 
-	spa->s = lws_urldecode_s_create(spa, wsi, spa->storage, i->max_storage,
+	spa->s = lws_urldecode_s_create(spa, wsi, spa->storage, spa->i.max_storage,
 					lws_urldecode_spa_cb);
 	if (!spa->s)
 		goto bail4;

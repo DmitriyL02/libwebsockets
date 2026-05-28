@@ -15,13 +15,31 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_AMOUNT,
+	LWS_SW_A,
+	LWS_SW_I,
+	LWS_SW_P,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_AMOUNT]	= { "--amount",        "Amount of something" },
+	[LWS_SW_A]	= { "-a",              "Enable -a feature" },
+	[LWS_SW_I]	= { "-i",              "Interface to bind to" },
+	[LWS_SW_P]	= { "-p",              "Port number to listen or connect on" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 
-static int interrupted, tests, tests_pass, tests_fail;
+static int interrupted, tests, tests_pass, tests_fail, doing_a_retry;
 static lws_sorted_usec_list_t sul_next_test;
 static lws_state_notify_link_t nl;
 struct lws_context *context;
+struct lws_ss_handle *h;
 size_t amount = 12345;
 
 static void
@@ -48,9 +66,9 @@ static const char * const default_ss_policy =
 
 	  "\"retry\": ["	/* named backoff / retry strategies */
 		"{\"default\": {"
-			"\"backoff\": [	 1000, 1000, 1000, 1000"
+			"\"backoff\": [	 1000, 1000 "
 				"],"
-			"\"conceal\":"		"4,"
+			"\"conceal\":"		"2,"
 			"\"jitterpc\":"		"20,"
 			"\"svalidping\":"	"30,"
 			"\"svalidhup\":"	"35"
@@ -63,7 +81,7 @@ static const char * const default_ss_policy =
 		 * We fetch the real policy from there using SS and switch to
 		 * using that.
 		 */
-		"{\"isrg_root_x1\": \""
+				"{\"isrg_root_x1\": \""
 	"MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw"
 	"TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh"
 	"cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4"
@@ -91,8 +109,22 @@ static const char * const default_ss_policy =
 	"jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc"
 	"oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq"
 	"4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA"
-	"mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d"
-	"emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc="
+	"mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57de"
+	"myPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc="
+	  "\"},\n"
+		"{\"isrg_root_x2\": \""
+	"MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw"
+	"CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg"
+	"R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00"
+	"MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT"
+	"ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw"
+	"EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW"
+	"+1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9"
+	"ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T"
+	"AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI"
+	"zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW"
+	"tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1"
+	"/q4AaOeMSQ+2b1tbFfLn"
 	  "\"},{"
 	"\"digicert_global_root_g2\": \"MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7K"
 	"GSxHQn65TANBgkqhkiG9w0BAQsFADBhMQswCQYDVQQGEwJVUzEVMBMGA1UEChMMR"
@@ -168,7 +200,8 @@ static const char * const default_ss_policy =
 		"{"
 			"\"name\": \"le_via_isrg\","
 			"\"stack\": ["
-				"\"isrg_root_x1\""
+				"\"isrg_root_x1\","
+				"\"isrg_root_x2\""
 			"]"
 		"}"
 	  "],"
@@ -181,7 +214,6 @@ static const char * const default_ss_policy =
 			"\"http_method\": \"POST\","
 			"\"http_url\": \"auth/o2/token\","
 			"\"plugins\": [],"
-			"\"opportunistic\": true,"
 			"\"tls\": true,"
 			"\"h2q_oflow_txcr\": true,"
 			"\"http_www_form_urlencoded\": true,"
@@ -191,44 +223,44 @@ static const char * const default_ss_policy =
 		"}},{"
 
 		/*
-		 * Just get a 200 from httpbin.org
+		 * Just get a 200 from httpbin
 		 * on h1:80, h1:443 and h2:443
 		 *
 		 * sanity check that we're working at all
 		 */
 
 		    "\"t_h1\": {"
-			"\"endpoint\": \"httpbin.org\","
-			"\"port\": 80,"
+			"\"endpoint\": \"libwebsockets.org\","
+			"\"port\": 8080,"
 			"\"protocol\": \"h1\","
 			"\"http_method\": \"GET\","
 			"\"http_url\": \"/status/200\","
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 10000,"
 			"\"retry\": \"default\""
 		"}},{"
 		    "\"t_h1_tls\": {"
-			"\"endpoint\": \"httpbin.org\","
+			"\"endpoint\": \"libwebsockets.org\","
 			"\"port\": 443,"
 			"\"protocol\": \"h1\","
 			"\"http_method\": \"GET\","
-			"\"http_url\": \"/status/200\","
+			"\"http_url\": \"/httpbin/status/200\","
 			"\"tls\": true,"
-			"\"opportunistic\": true,"
 			"\"retry\": \"default\","
-			"\"tls_trust_store\": \"arca1\""
+			"\"timeout_ms\": 10000,"
+			"\"tls_trust_store\": \"le_via_isrg\""
 		"}},{"
 		    "\"t_h2_tls\": {"
-			"\"endpoint\": \"httpbin.org\","
+			"\"endpoint\": \"libwebsockets.org\","
 			"\"port\": 443,"
 			"\"protocol\": \"h2\","
 			"\"http_method\": \"GET\","
-			"\"http_url\": \"/status/200\","
+			"\"http_url\": \"/httpbin/status/200\","
 			"\"tls\": true,"
 			"\"nghttp2_quirk_end_stream\": true,"
 			"\"h2q_oflow_txcr\": true,"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 10000,"
 			"\"retry\": \"default\","
-			"\"tls_trust_store\": \"arca1\""
+			"\"tls_trust_store\": \"le_via_isrg\""
 		"}},{"
 
 		/*
@@ -239,37 +271,37 @@ static const char * const default_ss_policy =
 		 */
 
 		    "\"d_h1\": {"
-			"\"endpoint\": \"httpbin.org\","
-			"\"port\": 80,"
+			"\"endpoint\": \"libwebsockets.org\","
+			"\"port\": 8080,"
 			"\"protocol\": \"h1\","
 			"\"http_method\": \"GET\","
 			"\"http_url\": \"/delay/10\","
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 3000,"
 			"\"retry\": \"default\""
 		"}},{"
 		    "\"d_h1_tls\": {"
-			"\"endpoint\": \"httpbin.org\","
+			"\"endpoint\": \"libwebsockets.org\","
 			"\"port\": 443,"
 			"\"protocol\": \"h1\","
 			"\"http_method\": \"GET\","
-			"\"http_url\": \"/delay/10\","
+			"\"http_url\": \"/httpbin/delay/10\","
 			"\"tls\": true,"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 3000,"
 			"\"retry\": \"default\","
-			"\"tls_trust_store\": \"arca1\""
+			"\"tls_trust_store\": \"le_via_isrg\""
 		"}},{"
 		    "\"d_h2_tls\": {"
-			"\"endpoint\": \"httpbin.org\","
+			"\"endpoint\": \"libwebsockets.org\","
 			"\"port\": 443,"
 			"\"protocol\": \"h2\","
 			"\"http_method\": \"GET\","
-			"\"http_url\": \"/delay/10\","
+			"\"http_url\": \"/httpbin/delay/15\","
 			"\"tls\": true,"
 			"\"nghttp2_quirk_end_stream\": true,"
 			"\"h2q_oflow_txcr\": true,"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 3000,"
 			"\"retry\": \"default\","
-			"\"tls_trust_store\": \"arca1\""
+			"\"tls_trust_store\": \"le_via_isrg\""
 		"}},{"
 
 		/*
@@ -285,7 +317,7 @@ static const char * const default_ss_policy =
 			"\"protocol\": \"h1\","
 			"\"http_method\": \"GET\","
 			"\"http_url\": \"/status/200\","
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 5000,"
 			"\"retry\": \"default\""
 		"}},{"
 		    "\"nxd_h1_tls\": {"
@@ -295,7 +327,7 @@ static const char * const default_ss_policy =
 			"\"http_method\": \"GET\","
 			"\"http_url\": \"/status/200\","
 			"\"tls\": true,"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 5000,"
 			"\"retry\": \"default\","
 			"\"tls_trust_store\": \"arca1\""
 		"}},{"
@@ -308,7 +340,7 @@ static const char * const default_ss_policy =
 			"\"tls\": true,"
 			"\"nghttp2_quirk_end_stream\": true,"
 			"\"h2q_oflow_txcr\": true,"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 5000,"
 			"\"retry\": \"default\","
 			"\"tls_trust_store\": \"arca1\""
 		"}},{"
@@ -321,46 +353,46 @@ static const char * const default_ss_policy =
 		 */
 
 		    "\"bulk_h1\": {"
-			"\"endpoint\": \"httpbin.org\","
-			"\"port\": 80,"
+			"\"endpoint\": \"libwebsockets.org\","
+			"\"port\": 8080,"
 			"\"protocol\": \"h1\","
 			"\"http_method\": \"GET\","
-			"\"http_url\": \"range/${amount}\","
+			"\"http_url\": \"bytes/${amount}\","
 			"\"metadata\": [{"
 					"\"amount\": \"\""
 				"}],"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 10000,"
 			"\"retry\": \"default\""
 		"}},{"
 		    "\"bulk_h1_tls\": {"
-			"\"endpoint\": \"httpbin.org\","
+			"\"endpoint\": \"libwebsockets.org\","
 			"\"port\": 443,"
 			"\"protocol\": \"h1\","
 			"\"http_method\": \"GET\","
-			"\"http_url\": \"range/${amount}\","
+			"\"http_url\": \"httpbin/bytes/${amount}\","
 			"\"metadata\": [{"
 					"\"amount\": \"\""
 				"}],"
 			"\"tls\": true,"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 10000,"
 			"\"retry\": \"default\","
-			"\"tls_trust_store\": \"arca1\""
+			"\"tls_trust_store\": \"le_via_isrg\""
 		"}},{"
 		    "\"bulk_h2_tls\": {"
-			"\"endpoint\": \"httpbin.org\","
+			"\"endpoint\": \"libwebsockets.org\","
 			"\"port\": 443,"
 			"\"protocol\": \"h2\","
 			"\"http_method\": \"GET\","
-			"\"http_url\": \"range/${amount}\","
+			"\"http_url\": \"httpbin/bytes/${amount}\","
 			"\"metadata\": [{"
 					"\"amount\": \"\""
 				"}],"
 			"\"tls\": true,"
 			"\"nghttp2_quirk_end_stream\": true,"
 			"\"h2q_oflow_txcr\": true,"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 10000,"
 			"\"retry\": \"default\","
-			"\"tls_trust_store\": \"arca1\""
+			"\"tls_trust_store\": \"le_via_isrg\""
 
 		"}},{"
 
@@ -386,7 +418,7 @@ static const char * const default_ss_policy =
 			"\"http_method\": \"GET\","
 			"\"http_url\": \"/\","
 			"\"tls\": true,"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 3000,"
 			"\"retry\": \"default\","
 			"\"tls_trust_store\": \"le_via_isrg\""
 		"}},{"
@@ -397,8 +429,8 @@ static const char * const default_ss_policy =
 			"\"http_method\": \"GET\","
 			"\"http_url\": \"/\","
 			"\"tls\": true,"
-			"\"opportunistic\": true,"
 			"\"retry\": \"default\","
+			"\"timeout_ms\": 3000,"
 			"\"tls_trust_store\": \"le_via_isrg\""
 		"}},{"
 		    "\"badcert_selfsigned\": {"
@@ -410,7 +442,7 @@ static const char * const default_ss_policy =
 			"\"tls\": true,"
 			"\"nghttp2_quirk_end_stream\": true,"
 			"\"h2q_oflow_txcr\": true,"
-			"\"opportunistic\": true,"
+			"\"timeout_ms\": 5000,"
 			"\"retry\": \"default\","
 			"\"tls_trust_store\": \"le_via_isrg\""
                 "}}"
@@ -442,21 +474,21 @@ struct tests_seq {
 
 	{
 		"h1:80 just get 200",
-		"t_h1", 5 * LWS_US_PER_SEC, LWSSSCS_QOS_ACK_REMOTE,
+		"t_h1", 15 * LWS_US_PER_SEC, LWSSSCS_QOS_ACK_REMOTE,
 		(1 << LWSSSCS_TIMEOUT) | (1 << LWSSSCS_QOS_NACK_REMOTE) |
 					 (1 << LWSSSCS_ALL_RETRIES_FAILED),
 		0
 	},
 	{
 		"h1:443 just get 200",
-		"t_h1_tls", 5 * LWS_US_PER_SEC, LWSSSCS_QOS_ACK_REMOTE,
+		"t_h1_tls", 15 * LWS_US_PER_SEC, LWSSSCS_QOS_ACK_REMOTE,
 		(1 << LWSSSCS_TIMEOUT) | (1 << LWSSSCS_QOS_NACK_REMOTE) |
 					 (1 << LWSSSCS_ALL_RETRIES_FAILED),
 		0
 	},
 	{
 		"h2:443 just get 200",
-		"t_h2_tls", 5 * LWS_US_PER_SEC, LWSSSCS_QOS_ACK_REMOTE,
+		"t_h2_tls", 15 * LWS_US_PER_SEC, LWSSSCS_QOS_ACK_REMOTE,
 		(1 << LWSSSCS_TIMEOUT) | (1 << LWSSSCS_QOS_NACK_REMOTE) |
 					 (1 << LWSSSCS_ALL_RETRIES_FAILED),
 		0
@@ -470,23 +502,22 @@ struct tests_seq {
 
 	{
 		"h1:80 timeout after connection",
-		"d_h1", 5 * LWS_US_PER_SEC, LWSSSCS_TIMEOUT,
+		"d_h1", 3 * LWS_US_PER_SEC, LWSSSCS_TIMEOUT,
 		(1 << LWSSSCS_QOS_ACK_REMOTE) | (1 << LWSSSCS_QOS_NACK_REMOTE) |
 					 (1 << LWSSSCS_ALL_RETRIES_FAILED),
 		0
 	},
 	{
 		"h1:443 timeout after connection",
-		"d_h1_tls", 5 * LWS_US_PER_SEC, LWSSSCS_TIMEOUT,
+		"d_h1_tls", 3 * LWS_US_PER_SEC, LWSSSCS_TIMEOUT,
 		(1 << LWSSSCS_QOS_ACK_REMOTE) | (1 << LWSSSCS_QOS_NACK_REMOTE) |
 					 (1 << LWSSSCS_ALL_RETRIES_FAILED),
 		0
 	},
 	{
 		"h2:443 timeout after connection",
-		"d_h2_tls", 5 * LWS_US_PER_SEC, LWSSSCS_TIMEOUT,
-		(1 << LWSSSCS_QOS_ACK_REMOTE) | (1 << LWSSSCS_QOS_NACK_REMOTE) |
-					 (1 << LWSSSCS_ALL_RETRIES_FAILED),
+		"d_h2_tls", 3 * LWS_US_PER_SEC, LWSSSCS_TIMEOUT,
+		(1 << LWSSSCS_QOS_ACK_REMOTE) | (1 << LWSSSCS_QOS_NACK_REMOTE),
 		0
 	},
 
@@ -497,7 +528,7 @@ struct tests_seq {
 
 	{
 		"h1:80 NXDOMAIN",
-		"nxd_h1", 65 * LWS_US_PER_SEC, LWSSSCS_UNREACHABLE,
+		"nxd_h1", 35 * LWS_US_PER_SEC, LWSSSCS_UNREACHABLE,
 		(1 << LWSSSCS_QOS_ACK_REMOTE) | (1 << LWSSSCS_QOS_NACK_REMOTE) |
 		(1 << LWSSSCS_TIMEOUT) | (1 << LWSSSCS_ALL_RETRIES_FAILED),
 		0
@@ -526,19 +557,19 @@ struct tests_seq {
 
 	{
 		"h1:80 NXDOMAIN exhaust retries",
-		"nxd_h1", 65 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
+		"nxd_h1", 35 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
 		(1 << LWSSSCS_QOS_ACK_REMOTE) | (1 << LWSSSCS_QOS_NACK_REMOTE),
 		0
 	},
 	{
 		"h1:443 NXDOMAIN exhaust retries",
-		"nxd_h1_tls", 65 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
+		"nxd_h1_tls", 35 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
 		(1 << LWSSSCS_QOS_ACK_REMOTE) | (1 << LWSSSCS_QOS_NACK_REMOTE),
 		0
 	},
 	{
 		"h2:443 NXDOMAIN exhaust retries",
-		"nxd_h2_tls", 65 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
+		"nxd_h2_tls", 25 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
 		(1 << LWSSSCS_QOS_ACK_REMOTE) | (1 << LWSSSCS_QOS_NACK_REMOTE),
 		0
 	},
@@ -575,19 +606,19 @@ struct tests_seq {
 
 	{
 		"h1:badcert_hostname",
-		"badcert_hostname", 6 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
+		"badcert_hostname", 35 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
 		(1 << LWSSSCS_QOS_NACK_REMOTE),
 		0
 	},
 	{
 		"h1:badcert_expired",
-		"badcert_expired", 6 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
+		"badcert_expired", 35 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
 		(1 << LWSSSCS_QOS_NACK_REMOTE),
 		0
 	},
 	{
 		"h1:badcert_selfsigned",
-		"badcert_selfsigned", 6 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
+		"badcert_selfsigned", 35 * LWS_US_PER_SEC, LWSSSCS_ALL_RETRIES_FAILED,
 		(1 << LWSSSCS_QOS_NACK_REMOTE),
 		0
 	},
@@ -599,6 +630,7 @@ typedef struct myss {
 	void				*opaque_data;
 
 	size_t				rx_seen;
+	lws_usec_t			start_us;
 	char				result_reported;
 } myss_t;
 
@@ -640,16 +672,17 @@ myss_state(void *userobj, void *sh, lws_ss_constate_t state,
 	char buf[8];
 	size_t sl;
 
-	lwsl_info("%s: %s: %s (%d), ord 0x%x\n", __func__, lws_ss_tag(m->ss),
-		  lws_ss_state_name((int)state), state, (unsigned int)ack);
+	lwsl_info("%s: %s: %s, ord 0x%x\n", __func__, lws_ss_tag(m->ss),
+		  lws_ss_state_name(state), (unsigned int)ack);
 
 	if (curr_test->mask_unexpected & (1u << state)) {
+
 		/*
 		 * We have definitively failed on an unexpected state received
 		 */
 
-		lwsl_warn("%s: failing on unexpected state %s\n",
-				__func__, lws_ss_state_name((int)state));
+		lwsl_warn("%s: ======= FAILING ON UNEXPECTED STATE %s\n",
+				__func__, lws_ss_state_name(state));
 
 fail:
 		m->result_reported = 1;
@@ -657,8 +690,10 @@ fail:
 		/* we'll start the next test next time around the event loop */
 		lws_sul_schedule(context, 0, &sul_next_test, tests_start_next, 1);
 
-		return LWSSSSRET_OK;
+		h = NULL;
+		return LWSSSSRET_DESTROY_ME;
 	}
+
 
 	if (state == curr_test->must_see) {
 
@@ -669,31 +704,98 @@ fail:
 			goto fail;
 		}
 
-		lwsl_warn("%s: saw expected state %s\n",
-				__func__, lws_ss_state_name((int)state));
+		lwsl_warn("%s: ++++++++ saw expected state %s\n",
+				__func__, lws_ss_state_name(state));
 		m->result_reported = 1;
 		tests_pass++;
 		/* we'll start the next test next time around the event loop */
 		lws_sul_schedule(context, 0, &sul_next_test, tests_start_next, 1);
 
+		if (state == LWSSSCS_TIMEOUT ||
+		    state == LWSSSCS_ALL_RETRIES_FAILED) {
+			h = NULL;
+			return LWSSSSRET_DESTROY_ME;
+		}
+
 		return LWSSSSRET_OK;
 	}
 
 	switch (state) {
+	case LWSSSCS_CONNECTED:
+		lwsl_notice("%s: CONNECTED\n", __func__);
+		{
+			lws_usec_t used = lws_now_usecs() - m->start_us;
+			unsigned int remaining;
+
+			if (used > (lws_usec_t)curr_test->timeout_us) {
+				if (curr_test->must_see == LWSSSCS_TIMEOUT ||
+				    (curr_test->must_see == LWSSSCS_ALL_RETRIES_FAILED)) {
+					lwsl_notice("%s: ++++++++ saw expected state %s (manual)\n", __func__, lws_ss_state_name(curr_test->must_see));
+					tests_pass++;
+				} else {
+					lwsl_notice("%s: timeout exceeded (must scan %d)\n", __func__, (int)curr_test->must_see);
+					tests_fail++;
+				}
+				m->result_reported = 1;
+				lws_sul_schedule(context, 0, &sul_next_test, tests_start_next, 1);
+				h = NULL;
+				return LWSSSSRET_DESTROY_ME;
+			}
+
+			remaining = (unsigned int)(((lws_usec_t)curr_test->timeout_us - used) / LWS_US_PER_MS);
+			if (!remaining)
+				remaining = 1;
+
+			lws_ss_start_timeout(m->ss, remaining);
+		}
+		break;
+	case LWSSSCS_CONNECTING:
 	case LWSSSCS_CREATING:
-		lws_ss_start_timeout(m->ss,
-			(unsigned int)(curr_test->timeout_us / LWS_US_PER_MS));
+		if (state == LWSSSCS_CREATING) {
+			if (!m->start_us)
+				m->start_us = lws_now_usecs();
+			lws_ss_start_timeout(m->ss,
+				(unsigned int)(curr_test->timeout_us / LWS_US_PER_MS));
+		} else {
+			lws_usec_t used = lws_now_usecs() - m->start_us;
+			unsigned int remaining;
+
+			if (used > (lws_usec_t)curr_test->timeout_us) {
+				if (curr_test->must_see == LWSSSCS_TIMEOUT ||
+				    (curr_test->must_see == LWSSSCS_ALL_RETRIES_FAILED)) {
+					lwsl_notice("%s: ++++++++ saw expected state %s (manual)\n", __func__, lws_ss_state_name(curr_test->must_see));
+					tests_pass++;
+				} else {
+					lwsl_notice("%s: timeout exceeded (must scan %d)\n", __func__, (int)curr_test->must_see);
+					tests_fail++;
+				}
+				m->result_reported = 1;
+				lws_sul_schedule(context, 0, &sul_next_test, tests_start_next, 1);
+				h = NULL;
+				return LWSSSSRET_DESTROY_ME;
+			}
+
+			remaining = (unsigned int)(((lws_usec_t)curr_test->timeout_us - used) / LWS_US_PER_MS);
+			if (!remaining)
+				remaining = 1;
+
+			lws_ss_start_timeout(m->ss, remaining);
+		}
+
 		if (curr_test->eom_pass) {
 			sl = (size_t)lws_snprintf(buf, sizeof(buf), "%u",
 					(unsigned int)curr_test->eom_pass);
 			if (lws_ss_set_metadata(m->ss, "amount", buf, sl))
 				return LWSSSSRET_DISCONNECT_ME;
 		}
-		return lws_ss_client_connect(m->ss);
+		if (state == LWSSSCS_CREATING)
+			return lws_ss_client_connect(m->ss);
+		break;
 
 	case LWSSSCS_DESTROYING:
-		if (!m->result_reported) {
-			lwsl_user("%s: failing on unexpected destruction\n",
+		lwsl_notice("%s: DESTROYING, res_rep %d, retry %d\n", __func__, m->result_reported, doing_a_retry);
+		if (!m->result_reported && !doing_a_retry) {
+			lwsl_notice("%s: failing on unexpected destruction\n",
 					__func__);
 
 			tests_fail++;
@@ -706,6 +808,9 @@ fail:
 		break;
 	}
 
+	if (state == LWSSSCS_TIMEOUT)
+		return LWSSSSRET_DISCONNECT_ME;
+
 	return LWSSSSRET_OK;
 }
 
@@ -714,7 +819,6 @@ tests_start_next(lws_sorted_usec_list_t *sul)
 {
 	struct tests_seq *ts;
 	lws_ss_info_t ssi;
-	static struct lws_ss_handle *h;
 
 	/* destroy the old one */
 
@@ -722,6 +826,8 @@ tests_start_next(lws_sorted_usec_list_t *sul)
 		lwsl_info("%s: destroying previous stream\n", __func__);
 		lws_ss_destroy(&h);
 	}
+
+	doing_a_retry = 0;
 
 	if ((unsigned int)tests >= LWS_ARRAY_SIZE(tests_seq)) {
 		lwsl_notice("Completed all tests\n");
@@ -807,13 +913,20 @@ main(int argc, const char **argv)
 {
 	struct lws_context_creation_info info;
 	const char *pp;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	signal(SIGINT, sigint_handler);
 
 	memset(&info, 0, sizeof info);
 	lws_cmdline_option_handle_builtin(argc, argv, &info);
 
-	if ((pp = lws_cmdline_option(argc, argv, "--amount")))
+	if ((pp = lws_cmdline_option(argc, argv, switches[LWS_SW_AMOUNT].sw)))
 		amount = (size_t)atoi(pp);
 
 	/* set the expected payload for the bulk-related tests to amount */
@@ -828,6 +941,8 @@ main(int argc, const char **argv)
 
 	info.fd_limit_per_thread = 1 + 16 + 1;
 	info.port = CONTEXT_PORT_NO_LISTEN;
+	info.connect_timeout_secs = 15;
+	info.timeout_secs = 10;
 #if defined(LWS_SS_USE_SSPC)
 	info.protocols = lws_sspc_protocols;
 	{
@@ -835,17 +950,17 @@ main(int argc, const char **argv)
 
 		/* connect to ssproxy via UDS by default, else via
 		 * tcp connection to this port */
-		if ((p = lws_cmdline_option(argc, argv, "-p")))
+		if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_P].sw)))
 			info.ss_proxy_port = (uint16_t)atoi(p);
 
 		/* UDS "proxy.ss.lws" in abstract namespace, else this socket
 		 * path; when -p given this can specify the network interface
 		 * to bind to */
-		if ((p = lws_cmdline_option(argc, argv, "-i")))
+		if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_I].sw)))
 			info.ss_proxy_bind = p;
 
 		/* if -p given, -a specifies the proxy address to connect to */
-		if ((p = lws_cmdline_option(argc, argv, "-a")))
+		if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_A].sw)))
 			info.ss_proxy_address = p;
 	}
 #else

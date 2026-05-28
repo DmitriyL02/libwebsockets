@@ -8,6 +8,17 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_BMP,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_BMP]	= { "--bmp",           "Enable --bmp feature" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <fcntl.h>
@@ -25,7 +36,7 @@ LWS_SS_USER_TYPEDEF
 	lws_display_render_state_t	*rs;
 } htmlss_t;
 
-static lws_display_render_state_t rs;
+static lws_display_render_state_t drs;
 
 static const uint8_t fira_c_r_10[] = {
 #include "../contrib/mcufont/fonts/FiraSansCondensed-Regular10.mcufont.h"
@@ -78,7 +89,7 @@ static const lws_display_colour_t palette[] = {
 #endif
 
 static const lws_surface_info_t ic = {
-	.wh_px = { { 600,0 },       { 448,0 } },
+	.wh_px = { { 1600,0 },       { 2000,0 } },
 	.wh_mm = { { 114,5000000 }, {  82,5000000 } },
 #if defined(SEVENCOL)
         .palette                = palette,
@@ -91,6 +102,41 @@ static const lws_surface_info_t ic = {
 };
 
 int fdin = 0, fdout = 1;
+
+static void
+write_bmp_header(int fd, int w, int h)
+{
+	uint8_t head[54];
+	int filesize = 54 + (w * h * 3);
+
+	memset(head, 0, sizeof(head));
+
+	head[0] = 'B';
+	head[1] = 'M';
+	head[2] = (uint8_t)(filesize & 0xff);
+	head[3] = (uint8_t)((filesize >> 8) & 0xff);
+	head[4] = (uint8_t)((filesize >> 16) & 0xff);
+	head[5] = (uint8_t)((filesize >> 24) & 0xff);
+	head[10] = 54;
+
+	head[14] = 40;
+	head[18] = (uint8_t)(w & 0xff);
+	head[19] = (uint8_t)((w >> 8) & 0xff);
+	head[20] = (uint8_t)((w >> 16) & 0xff);
+	head[21] = (uint8_t)((w >> 24) & 0xff);
+
+	h = -h; /* top-down */
+	head[22] = (uint8_t)(h & 0xff);
+	head[23] = (uint8_t)((h >> 8) & 0xff);
+	head[24] = (uint8_t)((h >> 16) & 0xff);
+	head[25] = (uint8_t)((h >> 24) & 0xff);
+
+	head[26] = 1;
+	head[28] = 24;
+
+	if (write(fd, head, 54) < 54)
+		lwsl_err("%s: write failed\n", __func__);
+}
 
 #if defined(SEVENCOL)
 static void
@@ -112,6 +158,11 @@ render(lws_sorted_usec_list_t *sul)
 					(rs->ic->greyscale ? 1 : 3);
 	lws_stateful_ret_t r;
 
+	lwsl_notice("%s: line %d\n", __func__, rs->curr);
+
+	if (rs->html == 1)
+		return;
+
 	if (!rs->line) {
 
 		lws_display_get_ids_boxes(rs);
@@ -128,6 +179,10 @@ render(lws_sorted_usec_list_t *sul)
 
 		memset(rs->line, 0, lbuflen);
 		rs->curr = 0;
+
+		if (fdout != 1)
+			write_bmp_header(fdout, rs->ic->wh_px[0].whole,
+					 rs->ic->wh_px[1].whole);
 	}
 
 	while (rs->curr != rs->lowest_id_y) {
@@ -136,7 +191,7 @@ render(lws_sorted_usec_list_t *sul)
 
 		if (r) {
 			/* eg, waiting for more jpg or whatever */
-			lwsl_info("%s: leaving %d\n", __func__, r);
+			lwsl_notice("%s: leaving 0x%x\n", __func__, (unsigned int)r);
 			return;
 		}
 
@@ -151,9 +206,23 @@ render(lws_sorted_usec_list_t *sul)
 				expand(rs->line[(n >> 1)] & 0xf, dump + (4 * (n + 1)));
 			}
 
-			write(fdout, dump, (size_t)rs->box.w.whole * 4);
+			if (write(fdout, dump, (size_t)rs->box.w.whole * 4) < (ssize_t)((size_t)rs->box.w.whole * 4))
+				lwsl_err("%s: write failed\n", __func__);
 		}
 #else
+		{
+			/* swap RGB -> BGR */
+			uint8_t *p = (uint8_t *)rs->line;
+			size_t n;
+
+			for (n = 0; n < lbuflen; n += 3) {
+				uint8_t t = p[0];
+				p[0] = p[2];
+				p[2] = t;
+				p += 3;
+			}
+		}
+
 #if defined(WIN32)
 		if (write(fdout, rs->line, (unsigned int)lbuflen) < 0) {
 #else
@@ -167,7 +236,10 @@ render(lws_sorted_usec_list_t *sul)
 	}
 
         free(rs->line);
-	lws_display_list_destroy(&rs->displaylist);
+
+	lwsl_warn("%s: render has reached end and destroys displaylist\n", __func__);
+	lws_display_list_destroy(cx, &rs->displaylist);
+
 	lws_default_loop_exit(cx);
 }
 
@@ -183,27 +255,34 @@ main(int argc, const char **argv)
 	struct lws_context_creation_info info;
 	int result = 0;
 	const char *p;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	signal(SIGINT, sigint_handler);
 
 	memset(&info, 0, sizeof info);
 	lws_cmdline_option_handle_builtin(argc, argv, &info);
 
-	lwsl_user("LWS LHP DLO test tool\n");
+	lwsl_user("LWS LHP DLO test tool - %s https://site.com [--bmp file.bmp]\n", argv[0]);
 
-	if ((p = lws_cmdline_option(argc, argv, "--stdout"))) {
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_BMP].sw))) {
 		fdout = open(p, LWS_O_WRONLY | LWS_O_CREAT | LWS_O_TRUNC, 0600);
 		if (fdout < 0) {
 			result = 1;
-			lwsl_err("%s: unable to open stdout file\n", __func__);
+			lwsl_err("%s: unable to open bmp file\n", __func__);
 			goto bail;
 		}
 	}
 
 	info.port = CONTEXT_PORT_NO_LISTEN;
 	info.options |= LWS_SERVER_OPTION_EXPLICIT_VHOSTS |
-			       LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT |
-			       LWS_SERVER_OPTION_H2_JUST_FIX_WINDOW_UPDATE_OVERFLOW;
+			LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT |
+			LWS_SERVER_OPTION_H2_JUST_FIX_WINDOW_UPDATE_OVERFLOW;
 
 	cx = lws_create_context(&info);
 	if (!cx)
@@ -224,11 +303,17 @@ main(int argc, const char **argv)
 	lws_font_register(cx, fira_c_b_16, sizeof(fira_c_b_16));
 	lws_font_register(cx, fira_c_b_20, sizeof(fira_c_b_20));
 
-	rs.ic = &ic;
+	drs.ic = &ic;
 
 	/* create the SS to the html using the URL on argv[1] */
 
-	if (lws_lhp_ss_browse(cx, &rs, argv[1], render)) {
+	if (argv[1] == NULL) {
+		lwsl_err("Give a url like https://warmcat.com on the commandline\n");
+		result = 1;
+		goto bail;
+	}
+
+	if (lws_lhp_ss_browse(cx, &drs, argv[1], render)) {
 		lws_context_destroy(cx);
 		goto bail;
 	}

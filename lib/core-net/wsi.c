@@ -24,46 +24,36 @@
 
 #include "private-lib-core.h"
 
-const char *
-lws_wsi_tag(struct lws *wsi)
-{
+const char *lws_wsi_tag(struct lws *wsi) {
 	if (!wsi)
 		return "[null wsi]";
 	return lws_lc_tag(&wsi->lc);
 }
 
-#if defined (_DEBUG)
-void lwsi_set_role(struct lws *wsi, lws_wsi_state_t role)
-{
+#if defined(_DEBUG)
+void lwsi_set_role(struct lws *wsi, lws_wsi_state_t role) {
 	wsi->wsistate = (wsi->wsistate & (~LWSI_ROLE_MASK)) | role;
 
 	lwsl_wsi_debug(wsi, "state 0x%lx", (unsigned long)wsi->wsistate);
 }
 
-void lwsi_set_state(struct lws *wsi, lws_wsi_state_t lrs)
-{
+void lwsi_set_state(struct lws *wsi, lws_wsi_state_t lrs) {
 	lws_wsi_state_t old = wsi->wsistate;
 
 	wsi->wsistate = (old & (unsigned int)(~LRS_MASK)) | lrs;
 
-	lwsl_wsi_debug(wsi, "lwsi_set_state 0x%lx -> 0x%lx",
-			(unsigned long)old, (unsigned long)wsi->wsistate);
+	lwsl_wsi_debug(wsi, "lwsi_set_state 0x%lx -> 0x%lx", (unsigned long)old,
+			(unsigned long)wsi->wsistate);
 }
 #endif
 
-
-void
-lws_log_prepend_wsi(struct lws_log_cx *cx, void *obj, char **p, char *e)
-{
+void lws_log_prepend_wsi(struct lws_log_cx *cx, void *obj, char **p, char *e) {
 	struct lws *wsi = (struct lws *)obj;
 
-	*p += lws_snprintf(*p, lws_ptr_diff_size_t(e, (*p)), "%s: ",
-							lws_wsi_tag(wsi));
+	*p += lws_snprintf(*p, lws_ptr_diff_size_t(e, (*p)), "%s: ", lws_wsi_tag(wsi));
 }
 
-void
-lws_vhost_bind_wsi(struct lws_vhost *vh, struct lws *wsi)
-{
+void lws_vhost_bind_wsi(struct lws_vhost *vh, struct lws *wsi) {
 	if (wsi->a.vhost == vh)
 		return;
 
@@ -80,22 +70,19 @@ lws_vhost_bind_wsi(struct lws_vhost *vh, struct lws *wsi)
 	vh->count_bound_wsi++;
 	lws_context_unlock(vh->context); /* } context ---------- */
 
-	lwsl_wsi_debug(wsi, "vh %s: wsi %s/%s, count_bound_wsi %d\n",
-		   vh->name, wsi->role_ops ? wsi->role_ops->name : "none",
-		   wsi->a.protocol ? wsi->a.protocol->name : "none",
-		   vh->count_bound_wsi);
+	lwsl_wsi_debug(wsi, "vh %s: wsi %s/%s, count_bound_wsi %d\n", vh->name,
+			wsi->role_ops ? wsi->role_ops->name : "none",
+			wsi->a.protocol ? wsi->a.protocol->name : "none",
+			vh->count_bound_wsi);
 	assert(wsi->a.vhost->count_bound_wsi > 0);
 }
 
-
 /* req cx lock... acquires vh lock */
-void
-__lws_vhost_unbind_wsi(struct lws *wsi)
-{
-        struct lws_vhost *vh = wsi->a.vhost;
+void __lws_vhost_unbind_wsi(struct lws *wsi) {
+	struct lws_vhost *vh = wsi->a.vhost;
 
-        if (!vh)
-                return;
+	if (!vh)
+		return;
 
 	lws_context_assert_lock_held(wsi->a.context);
 
@@ -109,8 +96,8 @@ __lws_vhost_unbind_wsi(struct lws *wsi)
 		lws_tls_jit_trust_vh_start_grace(vh);
 #endif
 
-	lwsl_wsi_debug(wsi, "vh %s: count_bound_wsi %d",
-		   vh->name, vh->count_bound_wsi);
+	lwsl_wsi_debug(wsi, "vh %s: count_bound_wsi %d", vh->name,
+			vh->count_bound_wsi);
 
 	lws_vhost_unlock(vh);
 
@@ -127,9 +114,7 @@ __lws_vhost_unbind_wsi(struct lws *wsi)
 	wsi->a.vhost = NULL;
 }
 
-struct lws *
-lws_get_network_wsi(struct lws *wsi)
-{
+struct lws *lws_get_network_wsi(struct lws *wsi) {
 	if (!wsi)
 		return NULL;
 
@@ -138,7 +123,7 @@ lws_get_network_wsi(struct lws *wsi)
 #if defined(LWS_WITH_CLIENT)
 			&& !wsi->client_mux_substream
 #endif
-	)
+	   )
 		return wsi;
 
 	while (wsi->mux.parent_wsi)
@@ -148,10 +133,8 @@ lws_get_network_wsi(struct lws *wsi)
 	return wsi;
 }
 
-
-const struct lws_protocols *
-lws_vhost_name_to_protocol(struct lws_vhost *vh, const char *name)
-{
+const struct lws_protocols *lws_vhost_name_to_protocol(struct lws_vhost *vh,
+		const char *name) {
 	int n;
 
 	for (n = 0; n < vh->count_protocols; n++)
@@ -161,10 +144,9 @@ lws_vhost_name_to_protocol(struct lws_vhost *vh, const char *name)
 	return NULL;
 }
 
-int
-lws_callback_all_protocol(struct lws_context *context,
-			  const struct lws_protocols *protocol, int reason)
-{
+int lws_callback_all_protocol(struct lws_context *context,
+		const struct lws_protocols *protocol,
+		int reason) {
 	struct lws_context_per_thread *pt = &context->pt[0];
 	unsigned int n, m = context->count_threads;
 	struct lws *wsi;
@@ -172,12 +154,12 @@ lws_callback_all_protocol(struct lws_context *context,
 	while (m--) {
 		for (n = 0; n < pt->fds_count; n++) {
 			wsi = wsi_from_fd(context, pt->fds[n].fd);
-			if (!wsi)
+			if (!wsi || !wsi->a.protocol)
 				continue;
-			if (wsi->a.protocol == protocol)
-				protocol->callback(wsi,
-					(enum lws_callback_reasons)reason,
-					wsi->user_space, NULL, 0);
+			if (wsi->a.protocol->callback == protocol->callback &&
+					!strcmp(protocol->name, wsi->a.protocol->name))
+				protocol->callback(wsi, (enum lws_callback_reasons)reason,
+						wsi->user_space, NULL, 0);
 		}
 		pt++;
 	}
@@ -185,27 +167,21 @@ lws_callback_all_protocol(struct lws_context *context,
 	return 0;
 }
 
-void *
-lws_evlib_wsi_to_evlib_pt(struct lws *wsi)
-{
+void *lws_evlib_wsi_to_evlib_pt(struct lws *wsi) {
 	struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
 
 	return pt->evlib_pt;
 }
 
-void *
-lws_evlib_tsi_to_evlib_pt(struct lws_context *cx, int tsi)
-{
+void *lws_evlib_tsi_to_evlib_pt(struct lws_context *cx, int tsi) {
 	struct lws_context_per_thread *pt = &cx->pt[tsi];
 
 	return pt->evlib_pt;
 }
 
-int
-lws_callback_all_protocol_vhost_args(struct lws_vhost *vh,
-			  const struct lws_protocols *protocol, int reason,
-			  void *argp, size_t len)
-{
+int lws_callback_all_protocol_vhost_args(struct lws_vhost *vh,
+		const struct lws_protocols *protocol,
+		int reason, void *argp, size_t len) {
 	struct lws_context *context = vh->context;
 	struct lws_context_per_thread *pt = &context->pt[0];
 	unsigned int n, m = context->count_threads;
@@ -214,12 +190,16 @@ lws_callback_all_protocol_vhost_args(struct lws_vhost *vh,
 	while (m--) {
 		for (n = 0; n < pt->fds_count; n++) {
 			wsi = wsi_from_fd(context, pt->fds[n].fd);
-			if (!wsi)
+
+			if (!wsi || !wsi->a.protocol || wsi->a.vhost != vh)
 				continue;
-			if (wsi->a.vhost == vh && (wsi->a.protocol == protocol ||
-						 !protocol))
-				wsi->a.protocol->callback(wsi, (enum lws_callback_reasons)reason,
-						wsi->user_space, argp, len);
+
+			if (protocol && wsi->a.protocol->callback != protocol->callback &&
+					strcmp(protocol->name, wsi->a.protocol->name))
+				continue;
+
+			wsi->a.protocol->callback(wsi, (enum lws_callback_reasons)reason,
+					wsi->user_space, argp, len);
 		}
 		pt++;
 	}
@@ -227,20 +207,19 @@ lws_callback_all_protocol_vhost_args(struct lws_vhost *vh,
 	return 0;
 }
 
-int
-lws_callback_all_protocol_vhost(struct lws_vhost *vh,
-			  const struct lws_protocols *protocol, int reason)
-{
+int lws_callback_all_protocol_vhost(struct lws_vhost *vh,
+		const struct lws_protocols *protocol,
+		int reason) {
 	return lws_callback_all_protocol_vhost_args(vh, protocol, reason, NULL, 0);
 }
 
-int
-lws_callback_vhost_protocols(struct lws *wsi, int reason, void *in, size_t len)
-{
+int lws_callback_vhost_protocols(struct lws *wsi, int reason, void *in,
+		size_t len) {
 	int n;
 
 	for (n = 0; n < wsi->a.vhost->count_protocols; n++)
-		if (wsi->a.vhost->protocols[n].callback(wsi, (enum lws_callback_reasons)reason, NULL, in, len))
+		if (wsi->a.vhost->protocols[n].callback(
+					wsi, (enum lws_callback_reasons)reason, NULL, in, len))
 			return 1;
 
 	return 0;
@@ -251,9 +230,7 @@ lws_callback_vhost_protocols(struct lws *wsi, int reason, void *in, size_t len)
  * We want to inject a fault that makes it feel like the peer hung up on us,
  * or we were otherwise cut off.
  */
-void
-lws_wsi_fault_timedclose_cb(lws_sorted_usec_list_t *s)
-{
+void lws_wsi_fault_timedclose_cb(lws_sorted_usec_list_t *s) {
 	struct lws *wsi = lws_container_of(s, struct lws, sul_fault_timedclose);
 
 	lwsl_wsi_warn(wsi, "force-closing");
@@ -262,9 +239,7 @@ lws_wsi_fault_timedclose_cb(lws_sorted_usec_list_t *s)
 #endif
 
 #if defined(LWS_WITH_SYS_FAULT_INJECTION)
-void
-lws_wsi_fault_timedclose(struct lws *wsi)
-{
+void lws_wsi_fault_timedclose(struct lws *wsi) {
 	uint64_t u;
 
 	if (!lws_fi(&wsi->fic, "timedclose"))
@@ -275,21 +250,22 @@ lws_wsi_fault_timedclose(struct lws *wsi)
 
 	lwsl_wsi_warn(wsi, "injecting close in %ums", (unsigned int)u);
 	lws_sul_schedule(wsi->a.context, wsi->tsi, &wsi->sul_fault_timedclose,
-			 lws_wsi_fault_timedclose_cb,
-			 (lws_usec_t)(u * 1000ull));
+			lws_wsi_fault_timedclose_cb, (lws_usec_t)(u * 1000ull));
 }
 #endif
 
-
 /*
  * We need the context lock
+ *
+ * If we returned a wsi rather than NULL, it is listed on the
+ * context->pre_natal_owner list of wild wsi not yet part of
+ * a vhost or on the fd list.
  */
 
-struct lws *
-__lws_wsi_create_with_role(struct lws_context *context, int tsi,
-			   const struct lws_role_ops *ops,
-			   lws_log_cx_t *log_cx_template)
-{
+struct lws *__lws_wsi_create_with_role(struct lws_context *context, int tsi,
+		const struct lws_role_ops *ops,
+		lws_log_cx_t *log_cx_template) {
+	struct lws_context_per_thread *pt = &context->pt[tsi];
 	size_t s = sizeof(struct lws);
 	struct lws *wsi;
 
@@ -332,17 +308,20 @@ __lws_wsi_create_with_role(struct lws_context *context, int tsi,
 	lws_fi_inherit_copy(&wsi->fic, &context->fic, "wsi", NULL);
 
 	if (lws_fi(&wsi->fic, "createfail")) {
+		lws_dll2_remove(&wsi->pre_natal);
 		lws_fi_destroy(&wsi->fic);
 		lws_free(wsi);
 		return NULL;
 	}
 
+	lws_pt_lock(pt, __func__); /* -------------- pt { */
+	lws_dll2_add_head(&wsi->pre_natal, &pt->pre_natal_wsi_owner);
+	lws_pt_unlock(pt); /* } pt --------------- */
+
 	return wsi;
 }
 
-int
-lws_wsi_inject_to_loop(struct lws_context_per_thread *pt, struct lws *wsi)
-{
+int lws_wsi_inject_to_loop(struct lws_context_per_thread *pt, struct lws *wsi) {
 	int ret = 1;
 
 	lws_pt_lock(pt, __func__); /* -------------- pt { */
@@ -354,6 +333,7 @@ lws_wsi_inject_to_loop(struct lws_context_per_thread *pt, struct lws *wsi)
 	if (__insert_wsi_socket_into_fds(pt->context, wsi))
 		goto bail;
 
+	lws_dll2_remove(&wsi->pre_natal);
 	ret = 0;
 
 bail:
@@ -367,14 +347,12 @@ bail:
  * afterwards
  */
 
-int
-lws_wsi_extract_from_loop(struct lws *wsi)
-{
+int lws_wsi_extract_from_loop(struct lws *wsi) {
 	if (lws_socket_is_valid(wsi->desc.sockfd))
 		__remove_wsi_socket_from_fds(wsi);
 
 	if (!wsi->a.context->event_loop_ops->destroy_wsi &&
-	    wsi->a.context->event_loop_ops->wsi_logical_close) {
+			wsi->a.context->event_loop_ops->wsi_logical_close) {
 		wsi->a.context->event_loop_ops->wsi_logical_close(wsi);
 		return 1; /* close / destroy continues async */
 	}
@@ -385,10 +363,8 @@ lws_wsi_extract_from_loop(struct lws *wsi)
 	return 0; /* he is destroyed */
 }
 
-int
-lws_callback_vhost_protocols_vhost(struct lws_vhost *vh, int reason, void *in,
-				   size_t len)
-{
+int lws_callback_vhost_protocols_vhost(struct lws_vhost *vh, int reason,
+		void *in, size_t len) {
 	int n;
 	struct lws *wsi = lws_zalloc(sizeof(*wsi), "fake wsi");
 
@@ -400,7 +376,8 @@ lws_callback_vhost_protocols_vhost(struct lws_vhost *vh, int reason, void *in,
 
 	for (n = 0; n < wsi->a.vhost->count_protocols; n++) {
 		wsi->a.protocol = &vh->protocols[n];
-		if (wsi->a.protocol->callback(wsi, (enum lws_callback_reasons)reason, NULL, in, len)) {
+		if (wsi->a.protocol->callback(wsi, (enum lws_callback_reasons)reason, NULL,
+					in, len)) {
 			lws_free(wsi);
 			return 1;
 		}
@@ -411,17 +388,14 @@ lws_callback_vhost_protocols_vhost(struct lws_vhost *vh, int reason, void *in,
 	return 0;
 }
 
-
-int
-lws_rx_flow_control(struct lws *wsi, int _enable)
-{
+int lws_rx_flow_control(struct lws *wsi, int _enable) {
 	struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
 	int en = _enable;
 
 	// h2 ignores rx flow control atm
 	if (lwsi_role_h2(wsi) || wsi->mux_substream ||
-	    lwsi_role_h2_ENCAPSULATION(wsi))
-		return 0; // !!!
+			lwsi_role_h2_ENCAPSULATION(wsi))
+		return 0;
 
 	lwsl_wsi_info(wsi, "0x%x", _enable);
 
@@ -444,17 +418,16 @@ lws_rx_flow_control(struct lws *wsi, int _enable)
 		wsi->rxflow_bitmap = (uint8_t)(wsi->rxflow_bitmap | (en & 0xff));
 
 	if ((LWS_RXFLOW_PENDING_CHANGE | (!wsi->rxflow_bitmap)) ==
-	    wsi->rxflow_change_to)
+			wsi->rxflow_change_to)
 		goto skip;
 
-	wsi->rxflow_change_to = LWS_RXFLOW_PENDING_CHANGE |
-				(!wsi->rxflow_bitmap);
+	wsi->rxflow_change_to = LWS_RXFLOW_PENDING_CHANGE | (!wsi->rxflow_bitmap);
 
-	lwsl_wsi_info(wsi, "bitmap 0x%x: en 0x%x, ch 0x%x",
-			   wsi->rxflow_bitmap, en, wsi->rxflow_change_to);
+	lwsl_wsi_info(wsi, "bitmap 0x%x: en 0x%x, ch 0x%x", wsi->rxflow_bitmap, en,
+			wsi->rxflow_change_to);
 
 	if (_enable & LWS_RXFLOW_REASON_FLAG_PROCESS_NOW ||
-	    !wsi->rxflow_will_be_applied) {
+			!wsi->rxflow_will_be_applied) {
 		en = __lws_rx_flow_control(wsi);
 		lws_pt_unlock(pt);
 
@@ -467,10 +440,8 @@ skip:
 	return 0;
 }
 
-void
-lws_rx_flow_allow_all_protocol(const struct lws_context *context,
-			       const struct lws_protocols *protocol)
-{
+void lws_rx_flow_allow_all_protocol(const struct lws_context *context,
+		const struct lws_protocols *protocol) {
 	const struct lws_context_per_thread *pt = &context->pt[0];
 	struct lws *wsi;
 	unsigned int n, m = context->count_threads;
@@ -478,9 +449,10 @@ lws_rx_flow_allow_all_protocol(const struct lws_context *context,
 	while (m--) {
 		for (n = 0; n < pt->fds_count; n++) {
 			wsi = wsi_from_fd(context, pt->fds[n].fd);
-			if (!wsi)
+			if (!wsi || !wsi->a.protocol)
 				continue;
-			if (wsi->a.protocol == protocol)
+			if (wsi->a.protocol->callback == protocol->callback &&
+					!strcmp(protocol->name, wsi->a.protocol->name))
 				lws_rx_flow_control(wsi, LWS_RXFLOW_ALLOW);
 		}
 		pt++;
@@ -488,10 +460,9 @@ lws_rx_flow_allow_all_protocol(const struct lws_context *context,
 }
 
 int user_callback_handle_rxflow(lws_callback_function callback_function,
-				struct lws *wsi,
-				enum lws_callback_reasons reason, void *user,
-				void *in, size_t len)
-{
+		struct lws *wsi,
+		enum lws_callback_reasons reason, void *user,
+		void *in, size_t len) {
 	int n;
 
 	wsi->rxflow_will_be_applied = 1;
@@ -503,15 +474,13 @@ int user_callback_handle_rxflow(lws_callback_function callback_function,
 	return n;
 }
 
-int
-__lws_rx_flow_control(struct lws *wsi)
-{
+int __lws_rx_flow_control(struct lws *wsi) {
 	struct lws *wsic = wsi->child_list;
 
 	// h2 ignores rx flow control atm
 	if (lwsi_role_h2(wsi) || wsi->mux_substream ||
-	    lwsi_role_h2_ENCAPSULATION(wsi))
-		return 0; // !!!
+			lwsi_role_h2_ENCAPSULATION(wsi))
+		return 0;
 
 	/* if he has children, do those if they were changed */
 	while (wsic) {
@@ -529,7 +498,7 @@ __lws_rx_flow_control(struct lws *wsi)
 	if (lws_buflist_next_segment_len(&wsi->buflist, NULL)) {
 		/* get ourselves called back to deal with stashed buffer */
 		lws_callback_on_writable(wsi);
-		// return 0;
+
 	}
 
 	/* now the pending is cleared, we can change rxflow state */
@@ -537,75 +506,67 @@ __lws_rx_flow_control(struct lws *wsi)
 	wsi->rxflow_change_to &= (~LWS_RXFLOW_PENDING_CHANGE) & 3;
 
 	lwsl_wsi_info(wsi, "rxflow: change_to %d",
-		      wsi->rxflow_change_to & LWS_RXFLOW_ALLOW);
+			wsi->rxflow_change_to & LWS_RXFLOW_ALLOW);
 
 	/* adjust the pollfd for this wsi */
 
 	if (wsi->rxflow_change_to & LWS_RXFLOW_ALLOW) {
 		lwsl_wsi_info(wsi, "reenable POLLIN");
-		// lws_buflist_describe(&wsi->buflist, NULL, __func__);
+
 		if (__lws_change_pollfd(wsi, 0, LWS_POLLIN)) {
 			lwsl_wsi_info(wsi, "fail");
 			return -1;
 		}
-	} else
-		if (__lws_change_pollfd(wsi, LWS_POLLIN, 0))
-			return -1;
+	} else if (__lws_change_pollfd(wsi, LWS_POLLIN, 0))
+		return -1;
 
 	return 0;
 }
 
-
-const struct lws_protocols *
-lws_get_protocol(struct lws *wsi)
-{
+const struct lws_protocols *lws_get_protocol(struct lws *wsi) {
 	return wsi->a.protocol;
 }
 
-
-int
-lws_ensure_user_space(struct lws *wsi)
-{
+int lws_ensure_user_space(struct lws *wsi) {
 	if (!wsi->a.protocol)
 		return 0;
 
 	/* allocate the per-connection user memory (if any) */
 
-	if (wsi->a.protocol->per_session_data_size && !wsi->user_space) {
-		wsi->user_space = lws_zalloc(
-			    wsi->a.protocol->per_session_data_size, "user space");
-		if (wsi->user_space == NULL) {
-			lwsl_wsi_err(wsi, "OOM");
-			return 1;
+	if (!wsi->user_space) {
+		size_t s = wsi->a.protocol->per_session_data_size;
+
+		if (!s)
+			s = (size_t)wsi->a.protocol->callback(wsi,
+					LWS_CALLBACK_GET_PSS_SIZE, NULL, NULL, 0);
+
+		if (s) {
+			wsi->user_space = lws_zalloc(s, "user space");
+			if (!wsi->user_space) {
+				lwsl_wsi_err(wsi, "OOM");
+				return 1;
+			}
 		}
 	} else
 		lwsl_wsi_debug(wsi, "protocol pss %lu, user_space=%p",
-				    (long)wsi->a.protocol->per_session_data_size,
-				    wsi->user_space);
+				(long)wsi->a.protocol->per_session_data_size,
+				wsi->user_space);
 	return 0;
 }
 
-void *
-lws_adjust_protocol_psds(struct lws *wsi, size_t new_size)
-{
+void *lws_adjust_protocol_psds(struct lws *wsi, size_t new_size) {
 	((struct lws_protocols *)lws_get_protocol(wsi))->per_session_data_size =
 		new_size;
 
 	if (lws_ensure_user_space(wsi))
-			return NULL;
+		return NULL;
 
 	return wsi->user_space;
 }
 
-int
-lws_get_tsi(struct lws *wsi)
-{
-        return (int)wsi->tsi;
-}
+int lws_get_tsi(struct lws *wsi) { return (int)wsi->tsi; }
 
-int
-lws_is_ssl(struct lws *wsi)
-{
+int lws_is_ssl(struct lws *wsi) {
 #if defined(LWS_WITH_TLS)
 	return wsi->tls.use_ssl & LCCSCF_USE_SSL;
 #else
@@ -615,16 +576,10 @@ lws_is_ssl(struct lws *wsi)
 }
 
 #if defined(LWS_WITH_TLS) && !defined(LWS_WITH_MBEDTLS)
-lws_tls_conn*
-lws_get_ssl(struct lws *wsi)
-{
-	return wsi->tls.ssl;
-}
+lws_tls_conn *lws_get_ssl(struct lws *wsi) { return wsi->tls.ssl; }
 #endif
 
-int
-lws_has_buffered_out(struct lws *wsi)
-{
+int lws_has_buffered_out(struct lws *wsi) {
 	if (wsi->buflist_out)
 		return 1;
 
@@ -640,27 +595,20 @@ lws_has_buffered_out(struct lws *wsi)
 	return 0;
 }
 
-int
-lws_partial_buffered(struct lws *wsi)
-{
-	return lws_has_buffered_out(wsi);
-}
+int lws_partial_buffered(struct lws *wsi) { return lws_has_buffered_out(wsi); }
 
-lws_fileofs_t
-lws_get_peer_write_allowance(struct lws *wsi)
-{
+lws_fileofs_t lws_get_peer_write_allowance(struct lws *wsi) {
 	if (!lws_rops_fidx(wsi->role_ops, LWS_ROPS_tx_credit))
 		return -1;
 
-	return lws_rops_func_fidx(wsi->role_ops, LWS_ROPS_tx_credit).
-				   tx_credit(wsi, LWSTXCR_US_TO_PEER, 0);
+	return lws_rops_func_fidx(wsi->role_ops, LWS_ROPS_tx_credit)
+		.tx_credit(wsi, LWSTXCR_US_TO_PEER, 0);
 }
 
-void
-lws_role_transition(struct lws *wsi, enum lwsi_role role, enum lwsi_state state,
-		    const struct lws_role_ops *ops)
-{
-#if (_LWS_ENABLED_LOGS & LLL_DEBUG) 
+void lws_role_transition(struct lws *wsi, enum lwsi_role role,
+		enum lwsi_state state,
+		const struct lws_role_ops *ops) {
+#if (_LWS_ENABLED_LOGS & LLL_DEBUG)
 	const char *name = "(unset)";
 #endif
 	wsi->wsistate = (unsigned int)role | (unsigned int)state;
@@ -669,15 +617,13 @@ lws_role_transition(struct lws *wsi, enum lwsi_role role, enum lwsi_state state,
 #if (_LWS_ENABLED_LOGS & LLL_DEBUG)
 	if (wsi->role_ops)
 		name = wsi->role_ops->name;
-	lwsl_wsi_debug(wsi, "wsistate 0x%lx, ops %s",
-			    (unsigned long)wsi->wsistate, name);
+	lwsl_wsi_debug(wsi, "wsistate 0x%lx, ops %s", (unsigned long)wsi->wsistate,
+			name);
 #endif
 }
 
-int
-lws_parse_uri(char *p, const char **prot, const char **ads, int *port,
-	      const char **path)
-{
+int lws_parse_uri(char *p, const char **prot, const char **ads, int *port,
+		const char **path) {
 	const char *end;
 	char unix_skt = 0;
 
@@ -728,31 +674,130 @@ lws_parse_uri(char *p, const char **prot, const char **ads, int *port,
 	return 0;
 }
 
+lws_parse_uri_t *
+lws_parse_uri_create(const char *uri)
+{
+	const char *p = uri;
+	int len = (int)strlen(uri);
+	lws_parse_uri_t *u;
+	char unix_skt = 0;
+	char *dest;
+	const char *end;
+
+	u = lws_zalloc(sizeof(*u) + (size_t)len + 4, __func__);
+	if (!u)
+		return NULL;
+
+	dest = (char *)(u + 1);
+
+	/* cut up the location into scheme, port and path */
+	end = uri;
+	while (*end && (*end != ':' || end[1] != '/' || end[2] != '/'))
+		end++;
+
+	u->scheme = dest;
+	if (*end) {
+		/* scheme */
+		int slen = lws_ptr_diff(end, p);
+		lws_strncpy(dest, p, (size_t)slen + 1);
+		dest += slen + 1;
+		p = end + 3;
+	} else {
+		*dest++ = '\0';
+	}
+
+	if (*p == '+')
+		unix_skt = 1;
+
+	const char *ads = p;
+	if (u->scheme[0]) {
+		if (!strcmp(u->scheme, "http") || !strcmp(u->scheme, "ws"))
+			u->port = 80;
+		else if (!strcmp(u->scheme, "https") || !strcmp(u->scheme, "wss"))
+			u->port = 443;
+	}
+
+	u->host = dest;
+	if (*p == '[') {
+		++ads;
+		while (*p && *p != ']')
+			p++;
+		if (*p) {
+			int hlen = lws_ptr_diff(p, ads);
+			lws_strncpy(dest, ads, (size_t)hlen + 1);
+			dest += hlen + 1;
+			p++;
+		} else {
+			int hlen = lws_ptr_diff(p, ads);
+			lws_strncpy(dest, ads, (size_t)hlen + 1);
+			dest += hlen + 1;
+		}
+	} else {
+		while (*p && *p != ':' && (unix_skt || (*p != '/' && *p != '?')))
+			p++;
+		int hlen = lws_ptr_diff(p, ads);
+		lws_strncpy(dest, ads, (size_t)hlen + 1);
+		dest += hlen + 1;
+	}
+
+	if (*p == ':') {
+		p++;
+		u->port = (uint16_t)atoi(p);
+		while (*p && *p != '/' && *p != '?')
+			p++;
+	}
+
+	u->unix_skt = unix_skt;
+
+	u->path = dest;
+	if (*p) {
+		if (*p == '/') {
+			p++;
+			if (*p) {
+				int plen = lws_ptr_diff(uri + len, p);
+				lws_strncpy(dest, p, (size_t)plen + 1);
+			} else
+				lws_strncpy(dest, "/", 2);
+		} else if (*p == '?') {
+			/* the ? is kept in the path */
+			int plen = lws_ptr_diff(uri + len, p);
+			lws_strncpy(dest, p, (size_t)plen + 1);
+		}
+	} else
+		lws_strncpy(dest, "/", 2);
+
+	return u;
+}
+
+void
+lws_parse_uri_destroy(lws_parse_uri_t **pcuri)
+{
+	if (*pcuri) {
+		lws_free(*pcuri);
+		*pcuri = NULL;
+	}
+}
+
 /* ... */
 
-int
-lws_get_urlarg_by_name_safe(struct lws *wsi, const char *name, char *buf, int len)
-{
+int lws_get_urlarg_by_name_safe(struct lws *wsi, const char *name, char *buf,
+		int len) {
 	int n = 0, fraglen, sl = (int)strlen(name);
 
 	do {
-		fraglen = lws_hdr_copy_fragment(wsi, buf, len,
-						WSI_TOKEN_HTTP_URI_ARGS, n);
+		fraglen = lws_hdr_copy_fragment(wsi, buf, len, WSI_TOKEN_HTTP_URI_ARGS, n);
 
-		if (fraglen < 0)
+		if (fraglen == -1) /* no fragment or basic problem */
 			break;
 
-		if (fraglen + 1 < len &&
-		    fraglen >= sl &&
-		    !strncmp(buf, name, (size_t)sl)) {
+		if (fraglen > 0 && /* fragment could fit */
+				fraglen + 1 < len && fraglen >= sl && !strncmp(buf, name, (size_t)sl)) {
 			/*
 			 * If he left off the trailing =, trim it from the
 			 * result
 			 */
 
-			if (name[sl - 1] != '=' &&
-			    sl < fraglen &&
-			    buf[sl] == '=')
+			if (name[sl - 1] != '=' && sl < fraglen && buf[sl] == '=')
 				sl++;
 
 			memmove(buf, buf + sl, (size_t)(fraglen - sl));
@@ -767,14 +812,12 @@ lws_get_urlarg_by_name_safe(struct lws *wsi, const char *name, char *buf, int le
 	return -1;
 }
 
-const char *
-lws_get_urlarg_by_name(struct lws *wsi, const char *name, char *buf, int len)
-{
+const char *lws_get_urlarg_by_name(struct lws *wsi, const char *name, char *buf,
+		int len) {
 	int n = lws_get_urlarg_by_name_safe(wsi, name, buf, len);
 
 	return n < 0 ? NULL : buf;
 }
-
 
 #if defined(LWS_WITHOUT_EXTENSIONS)
 
@@ -783,13 +826,10 @@ lws_get_urlarg_by_name(struct lws *wsi, const char *name, char *buf, int len)
  * extensions disabled.
  */
 
-int
-lws_extension_callback_pm_deflate(struct lws_context *context,
-                                  const struct lws_extension *ext,
-                                  struct lws *wsi,
-                                  enum lws_extension_callback_reasons reason,
-                                  void *user, void *in, size_t len)
-{
+int lws_extension_callback_pm_deflate(
+		struct lws_context *context, const struct lws_extension *ext,
+		struct lws *wsi, enum lws_extension_callback_reasons reason, void *user,
+		void *in, size_t len) {
 	(void)context;
 	(void)ext;
 	(void)wsi;
@@ -801,16 +841,13 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 	return 0;
 }
 
-int
-lws_set_extension_option(struct lws *wsi, const char *ext_name,
-			 const char *opt_name, const char *opt_val)
-{
+int lws_set_extension_option(struct lws *wsi, const char *ext_name,
+		const char *opt_name, const char *opt_val) {
 	return -1;
 }
 #endif
 
-int
-lws_is_cgi(struct lws *wsi) {
+int lws_is_cgi(struct lws *wsi) {
 #ifdef LWS_WITH_CGI
 	return !!wsi->http.cgi;
 #else
@@ -831,12 +868,10 @@ lws_pvo_search(const struct lws_protocol_vhost_options *pvo, const char *name)
 	return pvo;
 }
 
-int
-lws_pvo_get_str(void *in, const char *name, const char **result)
+int lws_pvo_get_str(void *in, const char *name, const char **result)
 {
 	const struct lws_protocol_vhost_options *pv =
-		lws_pvo_search((const struct lws_protocol_vhost_options *)in,
-				name);
+		lws_pvo_search((const struct lws_protocol_vhost_options *)in, name);
 
 	if (!pv)
 		return 1;
@@ -846,9 +881,28 @@ lws_pvo_get_str(void *in, const char *name, const char **result)
 	return 0;
 }
 
-int
-lws_broadcast(struct lws_context_per_thread *pt, int reason, void *in, size_t len)
+const struct lws_protocol_vhost_options *
+lws_pmo_search(const struct lws_http_mount *mount, const char *name)
 {
+	if (!mount)
+		return NULL;
+
+	return lws_pvo_search(mount->cgienv, name);
+}
+
+int
+lws_pmo_get_str(const struct lws_http_mount *mount, const char *name,
+		const char **result)
+{
+	if (!mount)
+		return 1;
+
+	return lws_pvo_get_str((void *)mount->cgienv, name, result);
+}
+
+
+int lws_broadcast(struct lws_context_per_thread *pt, int reason, void *in,
+		size_t len) {
 	struct lws_vhost *v = pt->context->vhost_list;
 	lws_fakewsi_def_plwsa(pt);
 	int n, ret = 0;
@@ -866,7 +920,8 @@ lws_broadcast(struct lws_context_per_thread *pt, int reason, void *in, size_t le
 		for (n = 0; n < v->count_protocols; n++) {
 			plwsa->protocol = p;
 			if (p->callback &&
-			    p->callback((struct lws *)plwsa, (enum lws_callback_reasons)reason, NULL, in, len))
+					p->callback((struct lws *)plwsa, (enum lws_callback_reasons)reason,
+						NULL, in, len))
 				ret |= 1;
 			p++;
 		}
@@ -877,22 +932,11 @@ lws_broadcast(struct lws_context_per_thread *pt, int reason, void *in, size_t le
 	return ret;
 }
 
-void *
-lws_wsi_user(struct lws *wsi)
-{
-	return wsi->user_space;
-}
+void *lws_wsi_user(struct lws *wsi) { return wsi->user_space; }
 
-int
-lws_wsi_tsi(struct lws *wsi)
-{
-	return wsi->tsi;
-}
+int lws_wsi_tsi(struct lws *wsi) { return wsi->tsi; }
 
-
-void
-lws_set_wsi_user(struct lws *wsi, void *data)
-{
+void lws_set_wsi_user(struct lws *wsi, void *data) {
 	if (!wsi->user_space_externally_allocated && wsi->user_space)
 		lws_free(wsi->user_space);
 
@@ -900,124 +944,67 @@ lws_set_wsi_user(struct lws *wsi, void *data)
 	wsi->user_space = data;
 }
 
-struct lws *
-lws_get_parent(const struct lws *wsi)
-{
-	return wsi->parent;
-}
+struct lws *lws_get_parent(const struct lws *wsi) { return wsi->parent; }
 
-struct lws *
-lws_get_child(const struct lws *wsi)
-{
-	return wsi->child_list;
-}
+struct lws *lws_get_child(const struct lws *wsi) { return wsi->child_list; }
 
-void *
-lws_get_opaque_parent_data(const struct lws *wsi)
-{
+void *lws_get_opaque_parent_data(const struct lws *wsi) {
 	return wsi->opaque_parent_data;
 }
 
-void
-lws_set_opaque_parent_data(struct lws *wsi, void *data)
-{
+void lws_set_opaque_parent_data(struct lws *wsi, void *data) {
 	wsi->opaque_parent_data = data;
 }
 
-void *
-lws_get_opaque_user_data(const struct lws *wsi)
-{
+void *lws_get_opaque_user_data(const struct lws *wsi) {
 	return wsi->a.opaque_user_data;
 }
 
-void
-lws_set_opaque_user_data(struct lws *wsi, void *data)
-{
+void lws_set_opaque_user_data(struct lws *wsi, void *data) {
 	wsi->a.opaque_user_data = data;
 }
 
-int
-lws_get_child_pending_on_writable(const struct lws *wsi)
-{
+int lws_get_child_pending_on_writable(const struct lws *wsi) {
 	return wsi->parent_pending_cb_on_writable;
 }
 
-void
-lws_clear_child_pending_on_writable(struct lws *wsi)
-{
+void lws_clear_child_pending_on_writable(struct lws *wsi) {
 	wsi->parent_pending_cb_on_writable = 0;
 }
 
+const char *lws_get_vhost_name(struct lws_vhost *vhost) { return vhost->name; }
 
+int lws_get_vhost_port(struct lws_vhost *vhost) { return vhost->listen_port; }
 
-const char *
-lws_get_vhost_name(struct lws_vhost *vhost)
-{
-	return vhost->name;
-}
+void *lws_get_vhost_user(struct lws_vhost *vhost) { return vhost->user; }
 
-int
-lws_get_vhost_port(struct lws_vhost *vhost)
-{
-	return vhost->listen_port;
-}
-
-void *
-lws_get_vhost_user(struct lws_vhost *vhost)
-{
-	return vhost->user;
-}
-
-const char *
-lws_get_vhost_iface(struct lws_vhost *vhost)
-{
+const char *lws_get_vhost_iface(struct lws_vhost *vhost) {
 	return vhost->iface;
 }
 
-lws_sockfd_type
-lws_get_socket_fd(struct lws *wsi)
-{
+lws_sockfd_type lws_get_socket_fd(struct lws *wsi) {
 	if (!wsi)
 		return -1;
 	return wsi->desc.sockfd;
 }
 
+struct lws_vhost *lws_vhost_get(struct lws *wsi) { return wsi->a.vhost; }
 
-struct lws_vhost *
-lws_vhost_get(struct lws *wsi)
-{
-	return wsi->a.vhost;
-}
+struct lws_vhost *lws_get_vhost(struct lws *wsi) { return wsi->a.vhost; }
 
-struct lws_vhost *
-lws_get_vhost(struct lws *wsi)
-{
-	return wsi->a.vhost;
-}
-
-const struct lws_protocols *
-lws_protocol_get(struct lws *wsi)
-{
+const struct lws_protocols *lws_protocol_get(struct lws *wsi) {
 	return wsi->a.protocol;
 }
 
 #if defined(LWS_WITH_UDP)
-const struct lws_udp *
-lws_get_udp(const struct lws *wsi)
-{
-	return wsi->udp;
-}
+const struct lws_udp *lws_get_udp(const struct lws *wsi) { return wsi->udp; }
 #endif
 
-struct lws_context *
-lws_get_context(const struct lws *wsi)
-{
+struct lws_context *lws_get_context(const struct lws *wsi) {
 	return wsi->a.context;
 }
 
-struct lws_log_cx *
-lwsl_wsi_get_cx(struct lws *wsi)
-{
+struct lws_log_cx *lwsl_wsi_get_cx(struct lws *wsi) {
 	if (!wsi)
 		return NULL;
 
@@ -1025,9 +1012,8 @@ lwsl_wsi_get_cx(struct lws *wsi)
 }
 
 #if defined(LWS_WITH_CLIENT)
-int
-_lws_generic_transaction_completed_active_conn(struct lws **_wsi, char take_vh_lock)
-{
+int _lws_generic_transaction_completed_active_conn(struct lws **_wsi,
+		char take_vh_lock) {
 	struct lws *wnew, *wsi = *_wsi;
 
 	/*
@@ -1063,8 +1049,7 @@ _lws_generic_transaction_completed_active_conn(struct lws **_wsi, char take_vh_l
 		lwsl_wsi_info(wsi, "nothing pipelined waiting");
 		lwsi_set_state(wsi, LRS_IDLING);
 
-		lws_set_timeout(wsi, PENDING_TIMEOUT_CLIENT_CONN_IDLE,
-				wsi->keep_warm_secs);
+		lws_set_timeout(wsi, PENDING_TIMEOUT_CLIENT_CONN_IDLE, wsi->keep_warm_secs);
 
 		return 0; /* no new transaction right now */
 	}
@@ -1078,7 +1063,7 @@ _lws_generic_transaction_completed_active_conn(struct lws **_wsi, char take_vh_l
 		lws_vhost_lock(wsi->a.vhost);
 
 	wnew = lws_container_of(wsi->dll2_cli_txn_queue_owner.head, struct lws,
-				dll2_cli_txn_queue);
+			dll2_cli_txn_queue);
 
 	assert(wsi != wnew);
 
@@ -1128,6 +1113,11 @@ _lws_generic_transaction_completed_active_conn(struct lws **_wsi, char take_vh_l
 #if defined(LWS_WITH_TLS)
 	/* pass on the tls */
 
+#if defined(LWS_TLS_SYNTHESIZE_CB)
+	lws_sul_cancel(&wsi->tls.sul_cb_synth);
+	lws_sess_cache_synth_cb(&wsi->tls.sul_cb_synth);
+#endif
+
 	wnew->tls = wsi->tls;
 	wsi->tls.client_bio = NULL;
 	wsi->tls.ssl = NULL;
@@ -1149,20 +1139,18 @@ _lws_generic_transaction_completed_active_conn(struct lws **_wsi, char take_vh_l
 
 	lws_dll2_remove(&wsi->dll_cli_active_conns);
 	lws_dll2_add_tail(&wnew->dll_cli_active_conns,
-			  &wsi->a.vhost->dll_cli_active_conns_owner);
+			&wsi->a.vhost->dll_cli_active_conns_owner);
 
 	/* move any queued guys to queue on new active conn */
 
 	lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1,
-				   wsi->dll2_cli_txn_queue_owner.head) {
-		struct lws *ww = lws_container_of(d, struct lws,
-					  dll2_cli_txn_queue);
+			wsi->dll2_cli_txn_queue_owner.head) {
+		struct lws *ww = lws_container_of(d, struct lws, dll2_cli_txn_queue);
 
 		lws_dll2_remove(&ww->dll2_cli_txn_queue);
-		lws_dll2_add_tail(&ww->dll2_cli_txn_queue,
-				  &wnew->dll2_cli_txn_queue_owner);
-
-	} lws_end_foreach_dll_safe(d, d1);
+		lws_dll2_add_tail(&ww->dll2_cli_txn_queue, &wnew->dll2_cli_txn_queue_owner);
+	}
+	lws_end_foreach_dll_safe(d, d1);
 
 	if (take_vh_lock)
 		lws_vhost_unlock(wsi->a.vhost);
@@ -1179,7 +1167,7 @@ _lws_generic_transaction_completed_active_conn(struct lws **_wsi, char take_vh_l
 	/* after the first one, they can only be coming from the queue */
 	wnew->transaction_from_pipeline_queue = 1;
 
-	lwsl_wsi_notice(wsi, " pipeline queue passed -> %s", lws_wsi_tag(wnew));
+	lwsl_wsi_info(wsi, " pipeline queue passed -> %s", lws_wsi_tag(wnew));
 
 	*_wsi = wnew; /* inform caller we swapped */
 
@@ -1187,9 +1175,7 @@ _lws_generic_transaction_completed_active_conn(struct lws **_wsi, char take_vh_l
 }
 #endif
 
-int LWS_WARN_UNUSED_RESULT
-lws_raw_transaction_completed(struct lws *wsi)
-{
+int LWS_WARN_UNUSED_RESULT lws_raw_transaction_completed(struct lws *wsi) {
 	if (lws_has_buffered_out(wsi)) {
 		/*
 		 * ...so he tried to send something large, but it went out
@@ -1210,18 +1196,16 @@ lws_raw_transaction_completed(struct lws *wsi)
 	return -1;
 }
 
-int
-lws_bind_protocol(struct lws *wsi, const struct lws_protocols *p,
-		  const char *reason)
-{
-//	if (wsi->a.protocol == p)
-//		return 0;
+int lws_bind_protocol(struct lws *wsi, const struct lws_protocols *p,
+		const char *reason) {
+	//	if (wsi->a.protocol == p)
+	//		return 0;
 	const struct lws_protocols *vp = wsi->a.vhost->protocols, *vpo;
 
 	if (wsi->a.protocol && wsi->protocol_bind_balance) {
-		wsi->a.protocol->callback(wsi,
-		       wsi->role_ops->protocol_unbind_cb[!!lwsi_role_server(wsi)],
-					wsi->user_space, (void *)reason, 0);
+		wsi->a.protocol->callback(
+				wsi, wsi->role_ops->protocol_unbind_cb[!!lwsi_role_server(wsi)],
+				wsi->user_space, (void *)reason, 0);
 		wsi->protocol_bind_balance = 0;
 	}
 	if (!wsi->user_space_externally_allocated)
@@ -1253,13 +1237,13 @@ lws_bind_protocol(struct lws *wsi, const struct lws_protocols *p,
 			vp++;
 		}
 		if (!hit)
-			lwsl_err("%s: %p is not in vhost '%s' protocols list\n",
-				 __func__, p, wsi->a.vhost->name);
+			lwsl_err("%s: %p is not in vhost '%s' protocols list\n", __func__, p,
+					wsi->a.vhost->name);
 	}
 
-	if (wsi->a.protocol->callback(wsi, wsi->role_ops->protocol_bind_cb[
-				    !!lwsi_role_server(wsi)],
-				    wsi->user_space, NULL, 0))
+	if (wsi->a.protocol->callback(
+				wsi, wsi->role_ops->protocol_bind_cb[!!lwsi_role_server(wsi)],
+				wsi->user_space, NULL, 0))
 		return 1;
 
 	wsi->protocol_bind_balance = 1;
@@ -1267,9 +1251,7 @@ lws_bind_protocol(struct lws *wsi, const struct lws_protocols *p,
 	return 0;
 }
 
-void
-lws_http_close_immortal(struct lws *wsi)
-{
+void lws_http_close_immortal(struct lws *wsi) {
 	struct lws *nwsi;
 
 	if (!wsi->mux_substream)
@@ -1280,7 +1262,7 @@ lws_http_close_immortal(struct lws *wsi)
 
 	nwsi = lws_get_network_wsi(wsi);
 	lwsl_wsi_debug(wsi, "%s (%d)", lws_wsi_tag(nwsi),
-				       nwsi->immortal_substream_count);
+			nwsi->immortal_substream_count);
 	assert(nwsi->immortal_substream_count);
 	nwsi->immortal_substream_count--;
 	if (!nwsi->immortal_substream_count)
@@ -1289,13 +1271,10 @@ lws_http_close_immortal(struct lws *wsi)
 		 * need to reapply a normal timeout regime to the nwsi
 		 */
 		lws_set_timeout(nwsi, PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE,
-				wsi->a.vhost->keepalive_timeout ?
-				    wsi->a.vhost->keepalive_timeout : 31);
+				lws_wsi_keepalive_timeout_eff(nwsi));
 }
 
-void
-lws_mux_mark_immortal(struct lws *wsi)
-{
+void lws_mux_mark_immortal(struct lws *wsi) {
 	struct lws *nwsi;
 
 	lws_set_timeout(wsi, NO_PENDING_TIMEOUT, 0);
@@ -1304,8 +1283,8 @@ lws_mux_mark_immortal(struct lws *wsi)
 #if defined(LWS_WITH_CLIENT)
 			&& !wsi->client_mux_substream
 #endif
-	) {
-		lwsl_wsi_err(wsi, "not mux substream");
+	   ) {
+		// lwsl_wsi_err(wsi, "not mux substream");
 		return;
 	}
 
@@ -1318,18 +1297,16 @@ lws_mux_mark_immortal(struct lws *wsi)
 		return;
 
 	lwsl_wsi_debug(wsi, "%s (%d)\n", lws_wsi_tag(nwsi),
-				    nwsi->immortal_substream_count);
+			nwsi->immortal_substream_count);
 
 	wsi->mux_stream_immortal = 1;
 	assert(nwsi->immortal_substream_count < 255); /* largest count */
-	nwsi->immortal_substream_count++;
+	 nwsi->immortal_substream_count++;
 	if (nwsi->immortal_substream_count == 1)
 		lws_set_timeout(nwsi, NO_PENDING_TIMEOUT, 0);
 }
 
-int
-lws_http_mark_sse(struct lws *wsi)
-{
+int lws_http_mark_sse(struct lws *wsi) {
 	if (!wsi)
 		return 0;
 
@@ -1344,9 +1321,8 @@ lws_http_mark_sse(struct lws *wsi)
 
 #if defined(LWS_WITH_CLIENT)
 
-const char *
-lws_wsi_client_stash_item(struct lws *wsi, int stash_idx, int hdr_idx)
-{
+const char *lws_wsi_client_stash_item(struct lws *wsi, int stash_idx,
+		int hdr_idx) {
 	/* try the generic client stash */
 	if (wsi->stash)
 		return wsi->stash->cis[stash_idx];
@@ -1360,13 +1336,33 @@ lws_wsi_client_stash_item(struct lws *wsi, int stash_idx, int hdr_idx)
 }
 #endif
 
+int lws_wsi_keepalive_timeout_eff(struct lws *wsi) {
+	int ds = wsi->a.vhost->keepalive_timeout;
+
+#if defined(LWS_WITH_SERVER)
+	if (wsi->http.mount_specific_keepalive_timeout_secs)
+		ds = (int)wsi->http.mount_specific_keepalive_timeout_secs;
+
+	if (wsi->parent &&
+			(int)wsi->parent->http.mount_specific_keepalive_timeout_secs > ds)
+		ds = (int)wsi->parent->http.mount_specific_keepalive_timeout_secs;
+#endif
+
+	if (!ds)
+		ds = 31;
+
+	// lwsl_wsi_notice(wsi, "Eff keepalive_timeout %ds ===================\n",
+	// ds);
+
+	return ds;
+}
+
 #if defined(LWS_ROLE_H2) || defined(LWS_ROLE_MQTT)
 
-void
-lws_wsi_mux_insert(struct lws *wsi, struct lws *parent_wsi, unsigned int sid)
-{
-	lwsl_wsi_info(wsi, "par %s: assign sid %d (curr %d)",
-			lws_wsi_tag(parent_wsi), sid, wsi->mux.my_sid);
+void lws_wsi_mux_insert(struct lws *wsi, struct lws *parent_wsi,
+		unsigned int sid) {
+	lwsl_wsi_info(wsi, "par %s: assign sid %d (curr %d)", lws_wsi_tag(parent_wsi),
+			sid, wsi->mux.my_sid);
 
 	if (wsi->mux.my_sid && wsi->mux.my_sid != (unsigned int)sid)
 		assert(0);
@@ -1384,37 +1380,31 @@ lws_wsi_mux_insert(struct lws *wsi, struct lws *parent_wsi, unsigned int sid)
 	parent_wsi->mux.child_count++;
 }
 
-struct lws *
-lws_wsi_mux_from_id(struct lws *parent_wsi, unsigned int sid)
-{
+struct lws *lws_wsi_mux_from_id(struct lws *parent_wsi, unsigned int sid) {
 	lws_start_foreach_ll(struct lws *, wsi, parent_wsi->mux.child_list) {
 		if (wsi->mux.my_sid == sid)
 			return wsi;
-	} lws_end_foreach_ll(wsi, mux.sibling_list);
+	}
+	lws_end_foreach_ll(wsi, mux.sibling_list);
 
 	return NULL;
 }
 
-void
-lws_wsi_mux_dump_children(struct lws *wsi)
-{
+void lws_wsi_mux_dump_children(struct lws *wsi) {
 #if defined(_DEBUG)
 	if (!wsi->mux.parent_wsi || !lwsl_visible(LLL_INFO))
 		return;
 
-	lws_start_foreach_llp(struct lws **, w,
-			      wsi->mux.parent_wsi->mux.child_list) {
+	lws_start_foreach_llp(struct lws **, w, wsi->mux.parent_wsi->mux.child_list) {
 		lwsl_wsi_info(wsi, "   \\---- child %s %s\n",
-				   (*w)->role_ops ? (*w)->role_ops->name : "?",
-							   lws_wsi_tag(*w));
+				(*w)->role_ops ? (*w)->role_ops->name : "?", lws_wsi_tag(*w));
 		assert(*w != (*w)->mux.sibling_list);
-	} lws_end_foreach_llp(w, mux.sibling_list);
+	}
+	lws_end_foreach_llp(w, mux.sibling_list);
 #endif
 }
 
-void
-lws_wsi_mux_close_children(struct lws *wsi, int reason)
-{
+void lws_wsi_mux_close_children(struct lws *wsi, int reason) {
 	struct lws *wsi2;
 	struct lws **w;
 
@@ -1426,80 +1416,69 @@ lws_wsi_mux_close_children(struct lws *wsi, int reason)
 		lwsl_wsi_info((*w), "   closing child");
 		/* disconnect from siblings */
 		wsi2 = (*w)->mux.sibling_list;
-		assert (wsi2 != *w);
+		assert(wsi2 != *w);
 		(*w)->mux.sibling_list = NULL;
 		(*w)->socket_is_permanently_unusable = 1;
-		__lws_close_free_wsi(*w, (enum lws_close_status)reason, "mux child recurse");
+		__lws_close_free_wsi(*w, (enum lws_close_status)reason,
+				"mux child recurse");
 		*w = wsi2;
 	}
 }
 
-
-void
-lws_wsi_mux_sibling_disconnect(struct lws *wsi)
-{
+void lws_wsi_mux_sibling_disconnect(struct lws *wsi) {
 	struct lws *wsi2;
 
-	lws_start_foreach_llp(struct lws **, w,
-			      wsi->mux.parent_wsi->mux.child_list) {
+	lws_start_foreach_llp(struct lws **, w, wsi->mux.parent_wsi->mux.child_list) {
 
 		/* disconnect from siblings */
 		if (*w == wsi) {
 			wsi2 = (*w)->mux.sibling_list;
 			(*w)->mux.sibling_list = NULL;
 			*w = wsi2;
-			lwsl_wsi_debug(wsi, " disentangled from sibling %s",
-					    lws_wsi_tag(wsi2));
+			lwsl_wsi_debug(wsi, " disentangled from sibling %s", lws_wsi_tag(wsi2));
 			break;
 		}
-	} lws_end_foreach_llp(w, mux.sibling_list);
+	}
+	lws_end_foreach_llp(w, mux.sibling_list);
 	wsi->mux.parent_wsi->mux.child_count--;
 
 	wsi->mux.parent_wsi = NULL;
 }
 
-void
-lws_wsi_mux_dump_waiting_children(struct lws *wsi)
-{
+void lws_wsi_mux_dump_waiting_children(struct lws *wsi) {
 #if defined(_DEBUG)
-	lwsl_info("%s: %s: children waiting for POLLOUT service:\n",
-		  __func__, lws_wsi_tag(wsi));
+	lwsl_info("%s: %s: children waiting for POLLOUT service:\n", __func__,
+			lws_wsi_tag(wsi));
 
 	wsi = wsi->mux.child_list;
 	while (wsi) {
 		lwsl_wsi_info(wsi, "  %c sid %u: 0x%x %s %s",
-			  wsi->mux.requested_POLLOUT ? '*' : ' ',
-			  wsi->mux.my_sid, lwsi_state(wsi),
-			  wsi->role_ops->name,
-			  wsi->a.protocol ? wsi->a.protocol->name : "noprotocol");
+				wsi->mux.requested_POLLOUT ? '*' : ' ', wsi->mux.my_sid,
+				lwsi_state(wsi), wsi->role_ops->name,
+				wsi->a.protocol ? wsi->a.protocol->name : "noprotocol");
 
 		wsi = wsi->mux.sibling_list;
 	}
 #endif
 }
 
-int
-lws_wsi_mux_mark_parents_needing_writeable(struct lws *wsi)
-{
+int lws_wsi_mux_mark_parents_needing_writeable(struct lws *wsi) {
 	struct lws /* *network_wsi = lws_get_network_wsi(wsi), */ *wsi2;
-	//int already = network_wsi->mux.requested_POLLOUT;
+	// int already = network_wsi->mux.requested_POLLOUT;
 
 	/* mark everybody above him as requesting pollout */
 
 	wsi2 = wsi;
 	while (wsi2) {
 		wsi2->mux.requested_POLLOUT = 1;
-		lwsl_wsi_info(wsi2, "sid %u, pending writable",
-							wsi2->mux.my_sid);
+		lwsl_wsi_info(wsi2, "sid %u, pending writable", wsi2->mux.my_sid);
 		wsi2 = wsi2->mux.parent_wsi;
 	}
 
 	return 0; // already;
 }
 
-struct lws *
-lws_wsi_mux_move_child_to_tail(struct lws **wsi2)
-{
+struct lws *lws_wsi_mux_move_child_to_tail(struct lws **wsi2) {
 	struct lws *w = *wsi2;
 
 	while (w) {
@@ -1534,9 +1513,7 @@ lws_wsi_mux_move_child_to_tail(struct lws **wsi2)
 	return w;
 }
 
-int
-lws_wsi_mux_action_pending_writeable_reqs(struct lws *wsi)
-{
+int lws_wsi_mux_action_pending_writeable_reqs(struct lws *wsi) {
 	struct lws *w = wsi->mux.child_list;
 
 	while (w) {
@@ -1554,9 +1531,7 @@ lws_wsi_mux_action_pending_writeable_reqs(struct lws *wsi)
 	return 0;
 }
 
-int
-lws_wsi_txc_check_skint(struct lws_tx_credit *txc, int32_t tx_cr)
-{
+int lws_wsi_txc_check_skint(struct lws_tx_credit *txc, int32_t tx_cr) {
 	if (txc->tx_cr <= 0) {
 		/*
 		 * If other side is not able to cope with us sending any DATA
@@ -1565,8 +1540,7 @@ lws_wsi_txc_check_skint(struct lws_tx_credit *txc, int32_t tx_cr)
 		 */
 
 		if (!txc->skint)
-			lwsl_info("%s: %p: skint (%d)\n", __func__, txc,
-				  (int)txc->tx_cr);
+			lwsl_info("%s: %p: skint (%d)\n", __func__, txc, (int)txc->tx_cr);
 
 		txc->skint = 1;
 
@@ -1574,8 +1548,7 @@ lws_wsi_txc_check_skint(struct lws_tx_credit *txc, int32_t tx_cr)
 	}
 
 	if (txc->skint)
-		lwsl_info("%s: %p: unskint (%d)\n", __func__, txc,
-			  (int)txc->tx_cr);
+		lwsl_info("%s: %p: unskint (%d)\n", __func__, txc, (int)txc->tx_cr);
 
 	txc->skint = 0;
 
@@ -1583,21 +1556,18 @@ lws_wsi_txc_check_skint(struct lws_tx_credit *txc, int32_t tx_cr)
 }
 
 #if defined(_DEBUG)
-void
-lws_wsi_txc_describe(struct lws_tx_credit *txc, const char *at, uint32_t sid)
-{
-	lwsl_info("%s: %p: %s: sid %d: %speer-to-us: %d, us-to-peer: %d\n",
-		  __func__, txc, at, (int)sid, txc->skint ? "SKINT, " : "",
-		  (int)txc->peer_tx_cr_est, (int)txc->tx_cr);
+void lws_wsi_txc_describe(struct lws_tx_credit *txc, const char *at,
+		uint32_t sid) {
+	lwsl_info("%s: %p: %s: sid %d: %speer-to-us: %d, us-to-peer: %d\n", __func__,
+			txc, at, (int)sid, txc->skint ? "SKINT, " : "",
+			(int)txc->peer_tx_cr_est, (int)txc->tx_cr);
 }
 #endif
 
-int
-lws_wsi_tx_credit(struct lws *wsi, char peer_to_us, int add)
-{
+int lws_wsi_tx_credit(struct lws *wsi, char peer_to_us, int add) {
 	if (wsi->role_ops && lws_rops_fidx(wsi->role_ops, LWS_ROPS_tx_credit))
-		return lws_rops_func_fidx(wsi->role_ops, LWS_ROPS_tx_credit).
-				   tx_credit(wsi, peer_to_us, add);
+		return lws_rops_func_fidx(wsi->role_ops, LWS_ROPS_tx_credit)
+			.tx_credit(wsi, peer_to_us, add);
 
 	return 0;
 }
@@ -1607,9 +1577,7 @@ lws_wsi_tx_credit(struct lws *wsi, char peer_to_us, int add)
  * managing the flow control manually (it may want to proxy this information)
  */
 
-int
-lws_wsi_txc_report_manual_txcr_in(struct lws *wsi, int32_t bump)
-{
+int lws_wsi_txc_report_manual_txcr_in(struct lws *wsi, int32_t bump) {
 	if (!wsi->txc.manual)
 		/*
 		 * If we don't care about managing it manually, no need to
@@ -1617,29 +1585,26 @@ lws_wsi_txc_report_manual_txcr_in(struct lws *wsi, int32_t bump)
 		 */
 		return 0;
 
-	return user_callback_handle_rxflow(wsi->a.protocol->callback,
-					   wsi, LWS_CALLBACK_WSI_TX_CREDIT_GET,
-					   wsi->user_space, NULL, (size_t)bump);
+	return user_callback_handle_rxflow(wsi->a.protocol->callback, wsi,
+			LWS_CALLBACK_WSI_TX_CREDIT_GET,
+			wsi->user_space, NULL, (size_t)bump);
 }
 
 #if defined(LWS_WITH_CLIENT)
 
-int
-lws_wsi_mux_apply_queue(struct lws *wsi)
-{
+int lws_wsi_mux_apply_queue(struct lws *wsi) {
 	/* we have a transaction queue that wants to pipeline */
 
 	lws_context_lock(wsi->a.context, __func__); /* -------------- cx { */
 	lws_vhost_lock(wsi->a.vhost);
 
 	lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1,
-				   wsi->dll2_cli_txn_queue_owner.head) {
-		struct lws *w = lws_container_of(d, struct lws,
-						 dll2_cli_txn_queue);
+			wsi->dll2_cli_txn_queue_owner.head) {
+		struct lws *w = lws_container_of(d, struct lws, dll2_cli_txn_queue);
 
 #if defined(LWS_ROLE_H2)
 		if (lwsi_role_http(wsi) &&
-		    lwsi_state(w) == LRS_H2_WAITING_TO_SEND_HEADERS) {
+				lwsi_state(w) == LRS_H2_WAITING_TO_SEND_HEADERS) {
 			lwsl_wsi_info(w, "cli pipeq to be h2");
 
 			lwsi_set_state(w, LRS_H1C_ISSUE_HANDSHAKE2);
@@ -1653,8 +1618,7 @@ lws_wsi_mux_apply_queue(struct lws *wsi)
 #endif
 
 #if defined(LWS_ROLE_MQTT)
-		if (lwsi_role_mqtt(wsi) &&
-		    lwsi_state(wsi) == LRS_ESTABLISHED) {
+		if (lwsi_role_mqtt(wsi) && lwsi_state(wsi) == LRS_ESTABLISHED) {
 			lwsl_wsi_info(w, "cli pipeq to be mqtt\n");
 
 			/* remove ourselves from client queue */
@@ -1664,8 +1628,8 @@ lws_wsi_mux_apply_queue(struct lws *wsi)
 			lws_wsi_mqtt_adopt(wsi, w);
 		}
 #endif
-
-	} lws_end_foreach_dll_safe(d, d1);
+	}
+	lws_end_foreach_dll_safe(d, d1);
 
 	lws_vhost_unlock(wsi->a.vhost);
 	lws_context_unlock(wsi->a.context); /* } cx --------------  */

@@ -82,8 +82,9 @@ lws_uv_idle(uv_idle_t *handle
 		uv_timer_start(&pt_to_priv_uv(pt)->sultimer, lws_uv_sultimer_cb,
 			       LWS_US_TO_MS((uint64_t)us), 0);
 
-	/* there is nobody who needs service forcing, shut down idle */
-	uv_idle_stop(handle);
+	/* if there is nobody who needs service forcing, shut down idle */
+	if (lws_service_adjust_timeout(pt->context, 1, pt->tid))
+		uv_idle_stop(handle);
 
 	lws_pt_unlock(pt);
 	lws_context_unlock(pt->context);
@@ -260,7 +261,7 @@ lws_uv_close_cb_sa(uv_handle_t *handle)
 			LWS_UV_REFCOUNT_STATIC_HANDLE_TO_PT(handle);
 	struct lws_pt_eventlibs_libuv *ptpriv = pt_to_priv_uv(pt);
 	struct lws_context *context = pt->context;
-#if !defined(LWS_WITH_NO_LOGS) && defined(_DEBUG)
+#if (_LWS_ENABLED_LOGS & LLL_INFO)
 	int tsi = (int)(pt - &context->pt[0]);
 #endif
 
@@ -697,10 +698,12 @@ elops_destroy_pt_uv(struct lws_context *context, int tsi)
 static int
 elops_listen_init_uv(struct lws_dll2 *d, void *user)
 {
+#if defined(LWS_WITH_SERVER)
 	struct lws *wsi = lws_container_of(d, struct lws, listen_list);
 
 	if (elops_init_vhost_listen_wsi_uv(wsi) == -1)
 		return -1;
+#endif
 
 	return 0;
 }
@@ -923,6 +926,7 @@ static const struct lws_event_loop_ops event_loop_ops_uv = {
 	/* destroy_pt */		elops_destroy_pt_uv,
 	/* destroy wsi */		NULL,
 	/* foreign_thread */		elops_foreign_thread_uv,
+	/* fake_POLLIN */		NULL,
 
 	/* flags */			0,
 
@@ -937,10 +941,10 @@ LWS_VISIBLE
 #endif
 const lws_plugin_evlib_t evlib_uv = {
 	.hdr = {
-		"libuv event loop",
-		"lws_evlib_plugin",
-		LWS_BUILD_HASH,
-		LWS_PLUGIN_API_MAGIC
+		.name = "libuv event loop",
+		._class = "lws_evlib_plugin",
+		.lws_build_hash = LWS_BUILD_HASH,
+		.api_magic = LWS_PLUGIN_API_MAGIC
 	},
 
 	.ops	= &event_loop_ops_uv

@@ -25,6 +25,7 @@
  *  same whether you are using openssl or mbedtls hash functions underneath.
  */
 #include "private-lib-core.h"
+#include "private-lib-tls-openssl.h"
 #if defined(LWS_WITH_JOSE)
 #include "private-lib-jose.h"
 #endif
@@ -56,7 +57,7 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 	case 128 / 8:
 		switch (mode) {
 		case LWS_GAESM_KW:
-#if defined(LWS_HAVE_EVP_aes_128_wrap)
+#if defined(LWS_HAVE_EVP_aes_128_wrap) && !defined(LWS_WITH_BORINGSSL)
 			EVP_CIPHER_CTX_set_flags(ctx->ctx,
 						EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
 			ctx->cipher = EVP_aes_128_wrap();
@@ -69,12 +70,12 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 		case LWS_GAESM_CBC:
 			ctx->cipher = EVP_aes_128_cbc();
 			break;
-#if defined(LWS_HAVE_EVP_aes_128_cfb128)
+#if defined(LWS_HAVE_EVP_aes_128_cfb128) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_CFB128:
 			ctx->cipher = EVP_aes_128_cfb128();
 			break;
 #endif
-#if defined(LWS_HAVE_EVP_aes_128_cfb8)
+#if defined(LWS_HAVE_EVP_aes_128_cfb8) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_CFB8:
 			ctx->cipher = EVP_aes_128_cfb8();
 			break;
@@ -94,7 +95,7 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 			ctx->cipher = EVP_aes_128_ofb();
 			break;
 #endif
-#if defined(LWS_HAVE_EVP_aes_128_xts)
+#if defined(LWS_HAVE_EVP_aes_128_xts) && !defined(LWS_WITH_BORINGSSL) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_XTS:
 			lwsl_err("%s: AES XTS requires double-length key\n",
 				 __func__);
@@ -111,7 +112,7 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 	case 192 / 8:
 		switch (mode) {
 		case LWS_GAESM_KW:
-#if defined(LWS_HAVE_EVP_aes_128_wrap)
+#if defined(LWS_HAVE_EVP_aes_128_wrap) && !defined(LWS_WITH_BORINGSSL)
 			EVP_CIPHER_CTX_set_flags(ctx->ctx,
 						EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
 			ctx->cipher = EVP_aes_192_wrap();
@@ -124,12 +125,12 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 		case LWS_GAESM_CBC:
 			ctx->cipher = EVP_aes_192_cbc();
 			break;
-#if defined(LWS_HAVE_EVP_aes_192_cfb128)
+#if defined(LWS_HAVE_EVP_aes_192_cfb128) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_CFB128:
 			ctx->cipher = EVP_aes_192_cfb128();
 			break;
 #endif
-#if defined(LWS_HAVE_EVP_aes_192_cfb8)
+#if defined(LWS_HAVE_EVP_aes_192_cfb8) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_CFB8:
 			ctx->cipher = EVP_aes_192_cfb8();
 			break;
@@ -149,7 +150,7 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 			ctx->cipher = EVP_aes_192_ofb();
 			break;
 #endif
-#if defined(LWS_HAVE_EVP_aes_128_xts)
+#if defined(LWS_HAVE_EVP_aes_128_xts) && !defined(LWS_WITH_BORINGSSL) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_XTS:
 			lwsl_err("%s: AES XTS 192 invalid\n", __func__);
 			goto bail;
@@ -165,7 +166,7 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 	case 256 / 8:
 		switch (mode) {
 		case LWS_GAESM_KW:
-#if defined(LWS_HAVE_EVP_aes_128_wrap)
+#if defined(LWS_HAVE_EVP_aes_128_wrap) && !defined(LWS_WITH_BORINGSSL)
 			EVP_CIPHER_CTX_set_flags(ctx->ctx,
 						EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
 			ctx->cipher = EVP_aes_256_wrap();
@@ -178,12 +179,12 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 		case LWS_GAESM_CBC:
 			ctx->cipher = EVP_aes_256_cbc();
 			break;
-#if defined(LWS_HAVE_EVP_aes_256_cfb128)
+#if defined(LWS_HAVE_EVP_aes_256_cfb128) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_CFB128:
 			ctx->cipher = EVP_aes_256_cfb128();
 			break;
 #endif
-#if defined(LWS_HAVE_EVP_aes_256_cfb8)
+#if defined(LWS_HAVE_EVP_aes_256_cfb8) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_CFB8:
 			ctx->cipher = EVP_aes_256_cfb8();
 			break;
@@ -203,7 +204,7 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 			ctx->cipher = EVP_aes_256_ofb();
 			break;
 #endif
-#if defined(LWS_HAVE_EVP_aes_128_xts)
+#if defined(LWS_HAVE_EVP_aes_128_xts) && !defined(LWS_WITH_BORINGSSL) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_XTS:
 			ctx->cipher = EVP_aes_128_xts();
 			break;
@@ -218,7 +219,7 @@ lws_genaes_create(struct lws_genaes_ctx *ctx, enum enum_aes_operation op,
 
 	case 512 / 8:
 		switch (mode) {
-#if defined(LWS_HAVE_EVP_aes_128_xts)
+#if defined(LWS_HAVE_EVP_aes_128_xts) && !defined(LWS_WITH_BORINGSSL) && !defined(LWS_WITH_BORINGSSL)
 		case LWS_GAESM_XTS:
 			ctx->cipher = EVP_aes_256_xts();
 #endif
@@ -322,7 +323,7 @@ lws_genaes_crypt(struct lws_genaes_ctx *ctx,
 
 	if (!ctx->init) {
 
-		EVP_CIPHER_CTX_set_key_length(ctx->ctx, (int)ctx->k->len);
+		EVP_CIPHER_CTX_set_key_length(ctx->ctx, SSL_UINT_CAST(ctx->k->len));
 
 		if (ctx->mode == LWS_GAESM_GCM) {
 			n = EVP_CIPHER_CTX_ctrl(ctx->ctx, EVP_CTRL_GCM_SET_IVLEN,

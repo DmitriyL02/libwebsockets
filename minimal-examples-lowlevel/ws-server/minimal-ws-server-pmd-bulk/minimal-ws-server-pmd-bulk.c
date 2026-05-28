@@ -14,6 +14,23 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_B,
+	LWS_SW_C,
+	LWS_SW_D,
+	LWS_SW_N,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_B]	= { "-b",              "Enable -b feature" },
+	[LWS_SW_C]	= { "-c",              "Client connections" },
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_N]	= { "-n",              "Enable -n feature" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 
@@ -52,24 +69,11 @@ static const struct lws_protocol_vhost_options pvo = {
 };
 
 static const struct lws_http_mount mount = {
-	/* .mount_next */		NULL,		/* linked-list "next" */
-	/* .mountpoint */		"/",		/* mountpoint URL */
-	/* .origin */			"./mount-origin", /* serve from dir */
-	/* .def */			"index.html",	/* default filename */
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
-	/* .mountpoint_len */		1,		/* char count */
-	/* .basic_auth_login_file */	NULL,
+	.mountpoint		= "/",			/* mountpoint URL */
+	.origin			= "./mount-origin",	/* serve from dir */
+	.def			= "index.html",		/* default filename */
+	.origin_protocol	= LWSMPRO_FILE,		/* files in a dir */
+	.mountpoint_len		= 1,			/* char count */
 };
 
 static const struct lws_extension extensions[] = {
@@ -100,10 +104,17 @@ int main(int argc, const char **argv)
 			/* | LLL_INFO */ /* | LLL_PARSER */ /* | LLL_HEADER */
 			/* | LLL_EXT */ /* | LLL_CLIENT */ /* | LLL_LATENCY */
 			/* | LLL_DEBUG */;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	signal(SIGINT, sigint_handler);
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
@@ -118,13 +129,13 @@ int main(int argc, const char **argv)
 	info.options =
 		LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
 
-	if (!lws_cmdline_option(argc, argv, "-n"))
+	if (!lws_cmdline_option(argc, argv, switches[LWS_SW_N].sw))
 		info.extensions = extensions;
 
-	if (lws_cmdline_option(argc, argv, "-c"))
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_C].sw))
 		options |= 1; /* send compressible text */
 
-	if (lws_cmdline_option(argc, argv, "-b"))
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_B].sw))
 		options |= 2; /* send in one giant blob */
 
 	info.pt_serv_buf_size = 32 * 1024;

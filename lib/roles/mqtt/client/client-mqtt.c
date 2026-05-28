@@ -131,6 +131,7 @@ lws_create_client_mqtt_object(const struct lws_client_connect_info *i,
 		lws_free((void *)cp->client_id);
 
 	c->keep_alive_secs = cp->keep_alive;
+	c->qos2_state_ops = cp->qos2_state_ops;
 	c->aws_iot = cp->aws_iot;
 
 	if (cp->will_param.topic &&
@@ -241,7 +242,7 @@ lws_mqtt_client_socket_service(struct lws *wsi, struct lws_pollfd *pollfd,
 		 * we are under PENDING_TIMEOUT_SENT_CLIENT_HANDSHAKE
 		 * timeout protection set in client-handshake.c
 		 */
-		if (!lws_client_connect_2_dnsreq(wsi)) {
+		if (!lws_client_connect_2_dnsreq_MAY_CLOSE_WSI(wsi)) {
 			/* closed */
 			lwsl_client("closed\n");
 			return -1;
@@ -324,7 +325,8 @@ start_ws_handshake:
 			lwsl_info("%s: zero length read\n",
 				  __func__);
 			goto fail;
-		case LWS_SSL_CAPABLE_MORE_SERVICE:
+		case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
+		case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
 			lwsl_info("SSL Capable more service\n");
 			return 0;
 		case LWS_SSL_CAPABLE_ERROR:
@@ -337,9 +339,33 @@ start_ws_handshake:
 			n = -1;
 		else
 			n = lws_read_mqtt(wsi, ebuf.token, (unsigned int)ebuf.len);
+
 		if (n < 0) {
-			lwsl_err("%s: Parsing packet failed\n", __func__);
-			goto fail;
+			lws_mqttc_t *c = &wsi->mqtt->client;
+			char msg[128];
+
+			switch (c->par.reason) {
+			case LMQCP_REASON_UNSUPPORTED_PROTOCOL:
+				n = lws_snprintf(msg, sizeof(msg), "reason: server does not support MQTT protocol " MQTT_VER_STRING "\n");
+			   break;
+			case LMQCP_REASON_CLIENT_ID_INVALID:
+				n = lws_snprintf(msg, sizeof(msg), "reason: server does not accept client ID %.*s\n", c->id->len, c->id->buf);
+				break;
+			case LMQCP_REASON_BAD_CREDENTIALS:
+				n = lws_snprintf(msg, sizeof(msg), "reason: invalid credentials\n");
+				break;
+			case LMQCP_REASON_NOT_AUTHORIZED:
+				n = lws_snprintf(msg, sizeof(msg), "reason: not authorized\n");
+				break;
+			default:
+				n = lws_snprintf(msg, sizeof(msg), "reason: unknown MQTT connection failure\n");
+				break;
+			}
+
+			lws_inform_client_conn_fail(wsi, (void *)msg, (size_t)n);
+			lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, __func__);
+
+			return -1;
 		}
 
 		m = ebuf.len - n;

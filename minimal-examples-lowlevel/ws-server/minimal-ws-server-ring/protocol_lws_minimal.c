@@ -64,8 +64,8 @@ cull_lagging_clients(struct per_vhost_data__minimal *vhd)
 	 * coming in, and they must close, freeing up ringbuffer entries.
 	 */
 
-	lws_start_foreach_llp_safe(struct per_session_data__minimal **,
-			      ppss, vhd->pss_list, pss_list) {
+	struct per_session_data__minimal **ppss = &vhd->pss_list;
+	while (*ppss) {
 
 		if ((*ppss)->tail == oldest_tail) {
 			old_pss = *ppss;
@@ -101,10 +101,6 @@ cull_lagging_clients(struct per_vhost_data__minimal *vhd)
 			lws_ll_fwd_remove(struct per_session_data__minimal,
 					  pss_list, (*ppss), vhd->pss_list);
 
-			/* use the changed *ppss so we won't skip anything */
-
-			continue;
-
 		} else {
 			/*
 			 * so this guy is a survivor of the cull.  Let's track
@@ -115,9 +111,11 @@ cull_lagging_clients(struct per_vhost_data__minimal *vhd)
 							&((*ppss)->tail));
 			if (m > most)
 				most = m;
+				
+			ppss = &(*ppss)->pss_list;
 		}
 
-	} lws_end_foreach_llp_safe(ppss);
+	}
 
 	/* it would mean we lost track of oldest... but Coverity insists */
 	if (!old_pss)
@@ -166,6 +164,8 @@ callback_minimal(struct lws *wsi, enum lws_callback_reasons reason,
 		vhd = lws_protocol_vh_priv_zalloc(lws_get_vhost(wsi),
 				lws_get_protocol(wsi),
 				sizeof(struct per_vhost_data__minimal));
+		if (!vhd)
+			return 1;
 		vhd->context = lws_get_context(wsi);
 		vhd->protocol = lws_get_protocol(wsi);
 		vhd->vhost = lws_get_vhost(wsi);

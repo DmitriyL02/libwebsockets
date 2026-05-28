@@ -60,7 +60,7 @@
  *
  * @return the context point
  */
-SSL_CTX* SSL_CTX_new(const SSL_METHOD *method, void *rngctx);
+SSL_CTX* SSL_CTX_new(const SSL_METHOD *method);
 
 /**
  * @brief free a SSL context
@@ -771,18 +771,6 @@ long SSL_CTX_get_timeout(const SSL_CTX *ctx);
  *     0 : failed
  */
 int SSL_CTX_set_cipher_list(SSL_CTX *ctx, const char *str);
-
-/**
- * @brief set the SSL cipher through the list string
- *
- * @param ssl - SSL point
- * @param str - cipher controller list string
- *
- * @return result
- *     1 : OK
- *     0 : failed
- */
-int SSL_set_cipher_list(SSL *ssl, const char *str);
 
 /**
  * @brief get the SSL cipher list string
@@ -1821,6 +1809,44 @@ const char *SSL_get_psk_identity_hint(SSL *ssl);
  * @return identity
  */
 const char *SSL_get_psk_identity(SSL *ssl);
+
+/**
+ * @brief Load a file containing CA certificates for verification into the SSL context
+ *
+ * @param ctx    - SSL context pointer
+ * @param CAfile - Path to the file containing CA certificates.
+ *
+ * @return result
+ *     1 : OK
+ *     0 : failed
+ */
+int SSL_CTX_load_verify_file(SSL_CTX *ctx, const char *CAfile);
+
+/**
+ * @brief Load a directory containing CA certificates for verification into the SSL context
+ *
+ * @param ctx    - SSL context pointer
+ * @param CApath - Path to the directory containing CA certificates.
+ *
+ * @return result
+ *     1 : OK
+ *     0 : failed
+ */
+int SSL_CTX_load_verify_dir(SSL_CTX *ctx, const char *CApath);
+
+/**
+ * @brief Load CA certificates from file and/or directory for verification
+ *
+ * @param ctx    - SSL context pointer
+ * @param CAfile - Path to the file containing CA certificates.
+ * @param CApath - Path to the directory containing CA certificates.
+ *
+ * @return result
+ *     1 : OK
+ *     0 : failed
+ */
+int SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile,
+                                  const char *CApath);
 
 #ifdef __cplusplus
 }

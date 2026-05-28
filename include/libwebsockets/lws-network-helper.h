@@ -1,7 +1,7 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2010 - 2020 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2023 Andy Green <andy@warmcat.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -27,6 +27,9 @@
  *
  * These wrap miscellaneous useful network-related functions
  */
+LWS_VISIBLE LWS_EXTERN struct lws_dll2_owner *
+lws_routing_table_get(struct lws_context *cx);
+
 ///@{
 
 #if defined(LWS_ESP_PLATFORM)
@@ -103,7 +106,7 @@ lws_canonical_hostname(struct lws_context *context);
  *	truncated if there is not enough room.  If either cannot be
  *	determined, they will be returned as valid zero-length strings.
  */
-LWS_VISIBLE LWS_EXTERN void
+LWS_VISIBLE LWS_EXTERN int LWS_WARN_UNUSED_RESULT
 lws_get_peer_addresses(struct lws *wsi, lws_sockfd_type fd, char *name,
 		       int name_len, char *rip, int rip_len);
 
@@ -245,5 +248,51 @@ lws_write_numeric_address(const uint8_t *ads, int size, char *buf, size_t len);
  */
 LWS_VISIBLE LWS_EXTERN int
 lws_sa46_write_numeric_address(lws_sockaddr46 *sa46, char *buf, size_t len);
+
+/**
+ * lws_parse_mac() - convert XX:XX:XX:XX:XX:XX to 6-byte MAC address
+ *
+ * \param ads: mac address as XX:XX:XX:XX:XX:XX string
+ * \param result_6_bytes: result buffer to take 6 bytes
+ *
+ * Converts a string representation of a 6-byte hex mac address to a 6-byte
+ * array.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_parse_mac(const char *ads, uint8_t *result_6_bytes);
+
+LWS_VISIBLE LWS_EXTERN int
+lws_parse_cidr(const char *cidr, lws_sockaddr46 *sa46, int *len);
+
+/**
+ * lws_is_lan_address() - checks if the given string represents a LAN address
+ *
+ * \param ads: The address string
+ *
+ * Returns 1 if the address is a local/LAN unroutable address
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_is_lan_address(const char *ads);
+
+/*
+ * lws_is_local_address() - checks if the given string represents a local address
+ *
+ * \param ads: the address string to check
+ *
+ * Returns 1 if the address is a recognized local address like "localhost" or "127.0.0.1",
+ * else 0.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_is_local_address(const char *ads);
+
+/**
+ * lws_is_lan_address() - checks if the given string represents a LAN address
+ *
+ * \param ads: The address string
+ *
+ * Returns 1 if the address is a local/LAN unroutable address
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_is_lan_address(const char *ads);
 
 ///@}

@@ -8,8 +8,28 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_C,
+	LWS_SW_D,
+	LWS_SW_E,
+	LWS_SW_F,
+	LWS_SW_K,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_C]	= { "-c",              "Output in C array format" },
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_E]	= { "-e",              "Encrypt using <alg> <enc> format (e.g. 'RSA1_5 A128CBC-HS256')" },
+	[LWS_SW_F]	= { "-f",              "Output in flattened representation" },
+	[LWS_SW_K]	= { "-k",              "Path to the JWK key file" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information (-h, --help)" },
+};
+
 #include <sys/types.h>
 #include <fcntl.h>
+#include <stdio.h>
 
 /*
  * handles escapes and line wrapping suitable for use
@@ -89,8 +109,15 @@ int main(int argc, const char **argv)
 	struct lws_context *context;
 	struct lws_jwe jwe;
 	const char *p;
+	(void)switches;
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((argc == 1) || lws_cmdline_option(argc, argv, "-h") || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
+
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
@@ -112,8 +139,8 @@ int main(int argc, const char **argv)
 
 	/* if encrypting, set the ciphers */
 
-	if ((p = lws_cmdline_option(argc, argv, "-e"))) {
-		char *sp = strchr(p, ' ');
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_E].sw))) {
+		char *sp = (char *)strchr(p, ' ');
 
 		if (!sp) {
 			lwsl_err("format: -e \"<cek cipher alg> "
@@ -162,7 +189,7 @@ int main(int argc, const char **argv)
 
 	/* grab the key */
 
-	if ((p = lws_cmdline_option(argc, argv, "-k"))) {
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_K].sw))) {
 		if (lws_jwk_load(&jwe.jwk, p, NULL, NULL)) {
 			lwsl_err("%s: problem loading JWK %s\n", __func__, p);
 
@@ -203,7 +230,7 @@ int main(int argc, const char **argv)
 			lwsl_err("%s: lws_jwe_encrypt failed\n", __func__);
 			goto bail1;
 		}
-		if (lws_cmdline_option(argc, argv, "-f"))
+		if (lws_cmdline_option(argc, argv, switches[LWS_SW_F].sw))
 			/* output the JWE in flattened form */
 			n = lws_jwe_render_flattened(&jwe, compact,
 						     sizeof(compact));
@@ -218,7 +245,7 @@ int main(int argc, const char **argv)
 			goto bail1;
 		}
 
-		if (lws_cmdline_option(argc, argv, "-c"))
+		if (lws_cmdline_option(argc, argv, switches[LWS_SW_C].sw))
 			format_c(compact);
 		else
 			if (write(1, compact,
@@ -230,7 +257,7 @@ int main(int argc, const char **argv)
 				goto bail1;
 			}
 	} else {
-		if (lws_cmdline_option(argc, argv, "-f")) {
+		if (lws_cmdline_option(argc, argv, switches[LWS_SW_F].sw)) {
 			if (lws_jwe_json_parse(&jwe, (uint8_t *)in, n,
 					       lws_concat_temp(temp, temp_len),
 					       &temp_len)) {

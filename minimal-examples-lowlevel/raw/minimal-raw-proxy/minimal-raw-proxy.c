@@ -13,17 +13,29 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_D,
+	LWS_SW_R,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_R]	= { "-r",              "Enable -r feature" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 #include <sys/types.h>
 
-#define LWS_PLUGIN_STATIC
-#include "../plugins/raw-proxy/protocol_lws_raw_proxy.c"
-
-static struct lws_protocols protocols[] = {
-	LWS_PLUGIN_PROTOCOL_RAW_PROXY,
-	LWS_PROTOCOL_LIST_TERM
+#if defined(LWS_WITH_PLUGINS)
+static const char * const plugin_dirs[] = {
+	LWS_PLUGIN_DIR "/",
+	NULL
 };
+#endif
 
 static int interrupted;
 
@@ -54,24 +66,33 @@ int main(int argc, const char **argv)
 	struct lws_context *context;
 	char outward[256];
 	const char *p;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	signal(SIGINT, sigint_handler);
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
 	lwsl_user("LWS minimal raw proxy\n");
 
-	if ((p = lws_cmdline_option(argc, argv, "-r"))) {
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_R].sw))) {
 		lws_strncpy(outward, p, sizeof(outward));
 		pvo1.value = outward;
 	}
 
 	memset(&info, 0, sizeof info); /* otherwise uninitialized garbage */
 	info.port = 7681;
-	info.protocols = protocols;
 	info.pvo = &pvo;
+#if defined(LWS_WITH_PLUGINS)
+	info.plugin_dirs = plugin_dirs;
+#endif
 	info.options = LWS_SERVER_OPTION_ADOPT_APPLY_LISTEN_ACCEPT_CONFIG;
 	info.listen_accept_role = "raw-proxy";
 	info.listen_accept_protocol = "raw-proxy";
@@ -79,6 +100,11 @@ int main(int argc, const char **argv)
 	context = lws_create_context(&info);
 	if (!context) {
 		lwsl_err("lws init failed\n");
+		return 1;
+	}
+
+	if (!lws_vhost_name_to_protocol(lws_get_vhost_by_name(context, "default"), "raw-proxy")) {
+		lwsl_err("raw-proxy plugin required\n");
 		return 1;
 	}
 

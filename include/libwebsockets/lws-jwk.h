@@ -66,7 +66,7 @@ struct lws_jwk_parse_state {
 	int pos;
 	int cose_state;
 	int seen;
-	unsigned short possible;
+	unsigned int possible;
 };
 
 /** lws_jwk_import() - Create a JSON Web key from the textual representation
@@ -213,7 +213,7 @@ lws_jwk_dump(struct lws_jwk *jwk);
  *
  * Returns 0 for OK or nonzero for failure
  */
-LWS_VISIBLE int
+LWS_VISIBLE LWS_EXTERN int
 lws_jwk_generate(struct lws_context *context, struct lws_jwk *jwk,
 	         enum lws_gencrypto_kty kty, int bits, const char *curve);
 

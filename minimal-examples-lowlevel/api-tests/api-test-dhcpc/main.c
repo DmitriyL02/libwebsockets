@@ -8,9 +8,20 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_I,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_I]	= { "-i",              "Interface to bind to" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <signal.h>
 
-static int interrupted, ok, fail, exp = 1;
+static int interrupted, ok, fail, expected = 1;
 struct lws_context *context;
 const char *nif;
 
@@ -56,6 +67,13 @@ main(int argc, const char **argv)
 	const char *p;
 #endif
 	int n = 1;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	signal(SIGINT, sigint_handler);
 
@@ -67,7 +85,7 @@ main(int argc, const char **argv)
 	info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 
 #if !defined(__COVERITY__)
-	if ((p = lws_cmdline_option(argc, argv, "-i")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_I].sw)))
 		nif = p;
 #endif
 
@@ -93,11 +111,11 @@ main(int argc, const char **argv)
 
 	lws_context_destroy(context);
 
-	if (fail || ok != exp)
-		lwsl_user("Completed: PASS: %d / %d, FAIL: %d\n", ok, exp,
+	if (fail || ok != expected)
+		lwsl_user("Completed: PASS: %d / %d, FAIL: %d\n", ok, expected,
 				fail);
 	else
-		lwsl_user("Completed: ALL PASS: %d / %d\n", ok, exp);
+		lwsl_user("Completed: ALL PASS: %d / %d\n", ok, expected);
 
-	return !(ok == exp && !fail);
+	return !(ok == expected && !fail);
 }

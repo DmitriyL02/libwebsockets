@@ -77,6 +77,7 @@ policy_set(lws_sorted_usec_list_t *sul)
 	 * ss connection close that was using the vhost from the old policy
 	 */
 
+	context->hss_fetch_policy = NULL;
 	lws_ss_destroy(&m->ss);
 
 	if (lws_ss_policy_set(context, "updated"))
@@ -97,7 +98,7 @@ ss_fetch_policy_state(void *userobj, void *sh, lws_ss_constate_t state,
 	ss_fetch_policy_t *m = (ss_fetch_policy_t *)userobj;
 	struct lws_context *context = (struct lws_context *)m->opaque_data;
 
-	lwsl_info("%s: %s, ord 0x%x\n", __func__, lws_ss_state_name((int)state),
+	lwsl_info("%s: %s, ord 0x%x\n", __func__, lws_ss_state_name(state),
 		  (unsigned int)ack);
 
 	switch (state) {

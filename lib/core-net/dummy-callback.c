@@ -121,6 +121,13 @@ lws_callback_ws_proxy(struct lws *wsi, enum lws_callback_reasons reason,
 		if (!wsi->h1_ws_proxied || !wsi->parent)
 			break;
 
+		/*
+		 * If the parent has started to close, don't try to
+		 * upgrade it, just let it go.
+		 */
+		if ((lwsi_state(wsi->parent) & 0xff) >= (LRS_RETURNED_CLOSE & 0xff))
+			return -1;
+
 		if (lws_process_ws_upgrade2(wsi->parent))
 			return -1;
 
@@ -145,6 +152,7 @@ lws_callback_ws_proxy(struct lws *wsi, enum lws_callback_reasons reason,
 	{
 		unsigned char **p = (unsigned char **)in, *end = (*p) + len,
 				    tmp[MAXHDRVAL];
+		char peer[64];
 
 		proxy_header(wsi, wsi->parent, tmp, sizeof(tmp),
 			      WSI_TOKEN_HTTP_ACCEPT_LANGUAGE, p, end);
@@ -154,6 +162,13 @@ lws_callback_ws_proxy(struct lws *wsi, enum lws_callback_reasons reason,
 
 		proxy_header(wsi, wsi->parent, tmp, sizeof(tmp),
 			      WSI_TOKEN_HTTP_SET_COOKIE, p, end);
+
+		lws_get_peer_simple(wsi->parent, peer, sizeof(peer));
+		
+		if (lws_add_http_header_by_token(wsi, WSI_TOKEN_X_FORWARDED_FOR,
+						 (uint8_t *)peer, (int)strlen(peer), p, end))
+                	lwsl_wsi_notice(wsi, "unable to append forwarded_for");
+
 		break;
 	}
 
@@ -186,7 +201,7 @@ lws_callback_ws_proxy(struct lws *wsi, enum lws_callback_reasons reason,
 
 		pkt = (struct lws_proxy_pkt *)dll;
 		if (lws_write(wsi, ((unsigned char *)&pkt[1]) +
-			      LWS_PRE, pkt->len, (enum lws_write_protocol)lws_write_ws_flags(
+			      LWS_PRE, pkt->len, lws_write_ws_flags(
 				pkt->binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT,
 					pkt->first, pkt->final)) < 0)
 			return -1;
@@ -208,6 +223,16 @@ lws_callback_ws_proxy(struct lws *wsi, enum lws_callback_reasons reason,
 		return -1;
 
 	case LWS_CALLBACK_RECEIVE:
+
+               if (!wsi->child_list) {
+                       lwsl_wsi_warn(wsi, "Proxy Srv side RX: no child");
+                       break;
+               }
+               if (!wsi->child_list->ws) {
+                       lwsl_wsi_warn(wsi, "Proxy Srv side RX: child does not have ws");
+                       break;
+               }
+
 		pkt = lws_zalloc(sizeof(*pkt) + LWS_PRE + len, __func__);
 		if (!pkt)
 			return -1;
@@ -230,7 +255,7 @@ lws_callback_ws_proxy(struct lws *wsi, enum lws_callback_reasons reason,
 
 		pkt = (struct lws_proxy_pkt *)dll;
 		if (lws_write(wsi, ((unsigned char *)&pkt[1]) +
-			      LWS_PRE, pkt->len, (enum lws_write_protocol)lws_write_ws_flags(
+			      LWS_PRE, pkt->len, lws_write_ws_flags(
 				pkt->binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT,
 					pkt->first, pkt->final)) < 0)
 			return -1;
@@ -366,7 +391,9 @@ lws_callback_http_dummy(struct lws *wsi, enum lws_callback_reasons reason,
 						   LWS_WRITE_HTTP_FINAL);
 
 			/* always close after sending it */
+#if defined(LWS_WITH_SERVER)
 			if (lws_http_transaction_completed(wsi))
+#endif
 				return -1;
 			return 0;
 		}
@@ -415,6 +442,10 @@ lws_callback_http_dummy(struct lws *wsi, enum lws_callback_reasons reason,
 			if (!lws_get_child(wsi))
 				break;
 
+#if defined(LWS_WITH_LATENCY)
+			lws_usec_t _proxy_rd_start = lws_now_usecs();
+#endif
+
 			/* this causes LWS_CALLBACK_RECEIVE_CLIENT_HTTP_READ */
 			if (lws_http_client_read(lws_get_child(wsi), &px,
 						 &lenx) < 0) {
@@ -425,6 +456,16 @@ lws_callback_http_dummy(struct lws *wsi, enum lws_callback_reasons reason,
 
 				return -1;
 			}
+
+#if defined(LWS_WITH_LATENCY)
+			{
+				unsigned int ms = (unsigned int)((lws_now_usecs() - _proxy_rd_start) / 1000);
+				if (ms > 2) {
+					struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
+					lws_latency_note(pt, _proxy_rd_start, 2000, "proxyrd:%dms", ms);
+				}
+			}
+#endif
 			break;
 		}
 
@@ -436,10 +477,22 @@ lws_callback_http_dummy(struct lws *wsi, enum lws_callback_reasons reason,
 			if (stream_close(wsi))
 				return -1;
 
+#if defined(LWS_WITH_SERVER)
 			if (lws_http_transaction_completed(wsi))
+#endif
 				return -1;
 		}
 #endif
+		if (wsi->http.deferred_transaction_completed) {
+			uint8_t zero = 0;
+			lws_write(wsi, &zero, 0, LWS_WRITE_HTTP_FINAL);
+#if defined(LWS_WITH_SERVER)
+			if (lws_http_transaction_completed(wsi))
+#endif
+				return -1;
+			return 0;
+		}
+
 		break;
 
 #if defined(LWS_WITH_HTTP_PROXY)
@@ -455,6 +508,10 @@ lws_callback_http_dummy(struct lws *wsi, enum lws_callback_reasons reason,
 		char *out = buf + LWS_PRE;
 
 		assert(lws_get_parent(wsi));
+
+#if defined(LWS_WITH_LATENCY)
+		lws_usec_t _proxy_wr_start = lws_now_usecs();
+#endif
 
 		if (wsi->http.proxy_parent_chunked) {
 
@@ -481,6 +538,17 @@ lws_callback_http_dummy(struct lws *wsi, enum lws_callback_reasons reason,
 		} else
 			n = lws_write(lws_get_parent(wsi), (unsigned char *)in,
 				      len, LWS_WRITE_HTTP);
+
+#if defined(LWS_WITH_LATENCY)
+		{
+			unsigned int ms = (unsigned int)((lws_now_usecs() - _proxy_wr_start) / 1000);
+			if (ms > 2) {
+				struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
+				lws_latency_note(pt, _proxy_wr_start, 2000, "proxywr:%dms", ms);
+			}
+		}
+#endif
+
 		if (n < 0)
 			return -1;
 		break; }

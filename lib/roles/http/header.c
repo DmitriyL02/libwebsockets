@@ -65,6 +65,14 @@ lws_wsi_is_h2(struct lws *wsi)
 }
 #endif
 
+#ifdef LWS_ROLE_H3
+int
+lws_wsi_is_h3(struct lws *wsi)
+{
+	return lwsi_role_h3(wsi);
+}
+#endif
+
 int
 lws_add_http_header_by_name(struct lws *wsi, const unsigned char *name,
 			    const unsigned char *value, int length,
@@ -74,9 +82,15 @@ lws_add_http_header_by_name(struct lws *wsi, const unsigned char *name,
 	if (lws_wsi_is_h2(wsi))
 		return lws_add_http2_header_by_name(wsi, name,
 						    value, length, p, end);
-#else
-	(void)wsi;
 #endif
+#ifdef LWS_ROLE_H3
+	if (wsi && lws_wsi_is_h3(wsi))
+		return lws_add_http3_header_by_name(wsi, name,
+						    value, length, p, end);
+#endif
+	if (!wsi) {
+		/* Used occasionally by tests that pass NULL wsi */
+	}
 	if (name) {
 		char has_colon = 0;
 		while (*p < end && *name) {
@@ -107,8 +121,27 @@ int lws_finalize_http_header(struct lws *wsi, unsigned char **p,
 #ifdef LWS_WITH_HTTP2
 	if (lws_wsi_is_h2(wsi))
 		return 0;
-#else
-	(void)wsi;
+#endif
+#ifdef LWS_ROLE_H3
+	if (wsi && lws_wsi_is_h3(wsi)) {
+		if (wsi->http.h3_prefix_ptr) {
+			uint32_t ric = wsi->http.h3_req_ric;
+			uint32_t base = wsi->http.h3_base;
+			
+			if (ric > base) {
+				/* Use the real encoder prefix routine instead of hardcoded prefix! */
+				/* We assume prefix fits in 2 bytes here because that's all we reserved! */
+				/* Max capacity in HTTP/3 default lws is usually 0 or small, but we will pass max_entries=1 for now. */
+				uint32_t max_entries = 1;
+				lws_qpack_encode_prefix(wsi->http.h3_prefix_ptr, 2, ric, base, max_entries);
+			} else {
+				wsi->http.h3_prefix_ptr[0] = 0x00;
+				wsi->http.h3_prefix_ptr[1] = 0x00;
+			}
+			wsi->http.h3_prefix_ptr = NULL;
+		}
+		return 0;
+	}
 #endif
 	if ((lws_intptr_t)(end - *p) < 3)
 		return 1;
@@ -146,6 +179,11 @@ lws_add_http_header_by_token(struct lws *wsi, enum lws_token_indexes token,
 #ifdef LWS_WITH_HTTP2
 	if (lws_wsi_is_h2(wsi))
 		return lws_add_http2_header_by_token(wsi, token, value,
+						     length, p, end);
+#endif
+#ifdef LWS_ROLE_H3
+	if (wsi && lws_wsi_is_h3(wsi))
+		return lws_add_http3_header_by_token(wsi, token, value,
 						     length, p, end);
 #endif
 	name = lws_token_to_string(token);
@@ -313,7 +351,7 @@ lws_add_http_header_status(struct lws *wsi, unsigned int _code,
 	static const char * const hver[] = {
 		"HTTP/1.0", "HTTP/1.1", "HTTP/2"
 	};
-	const struct lws_protocol_vhost_options *headers;
+	const struct lws_protocol_vhost_options *headers, *ho;
 	unsigned int code = _code & LWSAHH_CODE_MASK;
 	const char *description = "", *p1;
 	unsigned char code_and_desc[60];
@@ -327,6 +365,13 @@ lws_add_http_header_status(struct lws *wsi, unsigned int _code,
 #ifdef LWS_WITH_HTTP2
 	if (lws_wsi_is_h2(wsi)) {
 		n = lws_add_http2_header_status(wsi, code, p, end);
+		if (n)
+			return n;
+	} else
+#endif
+#ifdef LWS_ROLE_H3
+	if (lws_wsi_is_h3(wsi)) {
+		n = lws_add_http3_header_status(wsi, code, p, end);
 		if (n)
 			return n;
 	} else
@@ -362,26 +407,113 @@ lws_add_http_header_status(struct lws *wsi, unsigned int _code,
 	}
 
 	headers = wsi->a.vhost->headers;
+
 	while (headers) {
+		/*
+		 * Give mount headers the chance to individually override
+		 * each vhost header (case-insensitive and colon-agnostic)
+		 */
+		ho = wsi->http.mount_specific_headers;
+		int h_len = (int)strlen(headers->name);
+		if (h_len && headers->name[h_len - 1] == ':')
+			h_len--;
+
+		while (ho) {
+			int u_len = (int)strlen(ho->name);
+			if (u_len && ho->name[u_len - 1] == ':')
+				u_len--;
+
+			if (h_len == u_len && !strncasecmp(ho->name, headers->name, (size_t)h_len))
+				break;
+			ho = ho->next;
+		}
+		/* if there was no mount header of same name, use vhost one */
+		if (!ho)
+			ho = headers;
+
 		if (lws_add_http_header_by_name(wsi,
-				(const unsigned char *)headers->name,
-				(unsigned char *)headers->value,
-				(int)strlen(headers->value), p, end))
+				(const unsigned char *)ho->name,
+				(unsigned char *)ho->value,
+				(int)strlen(ho->value), p, end))
 			return 1;
 
 		headers = headers->next;
+	}
+
+	ho = wsi->http.mount_specific_headers;
+	while (ho) {
+		int already_provided = 0;
+		int h_len = (int)strlen(ho->name);
+		if (h_len && ho->name[h_len - 1] == ':')
+			h_len--;
+
+		headers = wsi->a.vhost->headers;
+		while (headers) {
+			int u_len = (int)strlen(headers->name);
+			if (u_len && headers->name[u_len - 1] == ':')
+				u_len--;
+
+			if (h_len == u_len && !strncasecmp(ho->name, headers->name, (size_t)h_len)) {
+				already_provided = 1;
+				break;
+			}
+			headers = headers->next;
+		}
+		if (!already_provided) {
+			if (lws_add_http_header_by_name(wsi,
+					(const unsigned char *)ho->name,
+					(unsigned char *)ho->value,
+					(int)strlen(ho->value), p, end))
+				return 1;
+		}
+		ho = ho->next;
 	}
 
 	if (wsi->a.vhost->options &
 	    LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE) {
 		headers = &pvo_hsbph[LWS_ARRAY_SIZE(pvo_hsbph) - 1];
 		while (headers) {
-			if (lws_add_http_header_by_name(wsi,
-					(const unsigned char *)headers->name,
-					(unsigned char *)headers->value,
-					(int)strlen(headers->value), p, end))
-				return 1;
+			int already_provided = 0;
+			const struct lws_protocol_vhost_options *uh = wsi->a.vhost->headers;
+			int h_len = (int)strlen(headers->name);
 
+			if (h_len && headers->name[h_len - 1] == ':')
+				h_len--;
+
+			while (uh) {
+				int u_len = (int)strlen(uh->name);
+				if (u_len && uh->name[u_len - 1] == ':')
+					u_len--;
+
+				if (h_len == u_len && !strncasecmp(uh->name, headers->name, (size_t)h_len)) {
+					already_provided = 1;
+					break;
+				}
+				uh = uh->next;
+			}
+
+			if (!already_provided) {
+				uh = wsi->http.mount_specific_headers;
+				while (uh) {
+					int u_len = (int)strlen(uh->name);
+					if (u_len && uh->name[u_len - 1] == ':')
+						u_len--;
+
+					if (h_len == u_len && !strncasecmp(uh->name, headers->name, (size_t)h_len)) {
+						already_provided = 1;
+						break;
+					}
+					uh = uh->next;
+				}
+			}
+
+			if (!already_provided) {
+				if (lws_add_http_header_by_name(wsi,
+						(const unsigned char *)headers->name,
+						(unsigned char *)headers->value,
+						(int)strlen(headers->value), p, end))
+					return 1;
+			}
 			headers = headers->next;
 		}
 	}
@@ -664,3 +796,55 @@ lws_sul_http_ah_lifecheck(lws_sorted_usec_list_t *sul)
 	lws_pt_unlock(pt);
 }
 #endif
+
+int
+lws_http_zap_header(struct lws *wsi, const char *name)
+{
+	int n = (int)strlen(name);
+	int index;
+
+	if (!wsi->http.ah)
+		return 0;
+
+	index = lws_http_string_to_known_header(name, (size_t)n);
+	if (index != LWS_HTTP_NO_KNOWN_HEADER && index < WSI_TOKEN_COUNT) {
+		wsi->http.ah->frag_index[index] = 0;
+		return 0;
+	}
+
+#if defined(LWS_WITH_CUSTOM_HEADERS)
+	{
+		ah_data_idx_t ll = wsi->http.ah->unk_ll_head, prev = 0;
+
+		while (ll) {
+			if (ll >= wsi->http.ah->data_length)
+				return 1;
+
+			if (n == lws_ser_ru16be(
+				(uint8_t *)&wsi->http.ah->data[ll + UHO_NLEN]) &&
+			    !strncmp(name, &wsi->http.ah->data[ll + UHO_NAME], (unsigned int)n)) {
+				/* found it, remove from list */
+				ah_data_idx_t next = lws_ser_ru32be(
+					(uint8_t *)&wsi->http.ah->data[ll + UHO_LL]);
+
+				if (!prev)
+					wsi->http.ah->unk_ll_head = next;
+				else
+					lws_ser_wu32be(
+						(uint8_t *)&wsi->http.ah->data[prev + UHO_LL],
+						next);
+
+				if (!next)
+					wsi->http.ah->unk_ll_tail = prev;
+
+				return 0;
+			}
+
+			prev = ll;
+			ll = lws_ser_ru32be((uint8_t *)&wsi->http.ah->data[ll + UHO_LL]);
+		}
+	}
+#endif
+
+	return 0;
+}

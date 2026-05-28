@@ -31,6 +31,9 @@ const struct lws_role_ops *available_roles[] = {
 #if defined(LWS_ROLE_H2)
 	&role_ops_h2,
 #endif
+#if defined(LWS_ROLE_QUIC)
+	&role_ops_quic,
+#endif
 #if defined(LWS_ROLE_H1)
 	&role_ops_h1,
 #endif
@@ -305,7 +308,7 @@ lws_protocol_vh_priv_get(struct lws_vhost *vhost,
 		}
 
 		if (n == vhost->count_protocols) {
-			lwsl_vhost_err(vhost, "unknown protocol %p", prot);
+			lwsl_vhost_err(vhost, "unknown protocol %p (%s)", prot, prot->name);
 			return NULL;
 		}
 	}
@@ -387,10 +390,14 @@ lws_protocol_init_vhost(struct lws_vhost *vh, int *any)
 
 	memset(&_lwsa, 0, sizeof(_lwsa));
 #else
+#if defined(__COVERITY__)
+	struct lws _lws = { 0 };
+#else
 	struct lws _lws;
-	struct lws_a *lwsa = &_lws.a;
 
-	memset(&_lws, 0, sizeof(_lws));
+	memset((void *)&_lws, 0, sizeof(_lws));
+#endif
+	struct lws_a *lwsa = &_lws.a;
 #endif
 
 	lwsa->context = vh->context;
@@ -398,7 +405,10 @@ lws_protocol_init_vhost(struct lws_vhost *vh, int *any)
 
 	/* initialize supported protocols on this vhost */
 
-	for (n = 0; n < vh->count_protocols; n++) {
+	/* Pass 1: init plugins first */
+
+	for (n = vh->plugin_protocol_bind;
+	     n < vh->plugin_protocol_bind + vh->plugin_protocol_count; n++) {
 		lwsa->protocol = &vh->protocols[n];
 		if (!vh->protocols[n].name)
 			continue;
@@ -451,7 +461,8 @@ lws_protocol_init_vhost(struct lws_vhost *vh, int *any)
 		 * prepared in case the protocol handler wants to touch them
 		 */
 
-		if (pvo
+		if (pvo || (vh->options & LWS_SERVER_OPTION_VH_INSTANTIATE_ALL_PROTOCOLS)
+
 #if !defined(LWS_WITH_PLUGINS)
 				/*
 				 * with plugins, you have to explicitly
@@ -467,22 +478,111 @@ lws_protocol_init_vhost(struct lws_vhost *vh, int *any)
 			lwsl_vhost_info(vh, "init %s.%s", vh->name,
 					vh->protocols[n].name);
 			if (vh->protocols[n].callback((struct lws *)lwsa,
-				LWS_CALLBACK_PROTOCOL_INIT, NULL,
-#if !defined(LWS_WITH_PLUGINS)
-				(void *)(pvo ? pvo->options : NULL),
-#else
-				(void *)pvo->options,
-#endif
-				0)) {
+					LWS_CALLBACK_PROTOCOL_INIT, NULL,
+					(void *)(pvo ? pvo->options : NULL),
+					0)) {
 				if (vh->protocol_vh_privs && vh->protocol_vh_privs[n]) {
 					lws_free(vh->protocol_vh_privs[n]);
 					vh->protocol_vh_privs[n] = NULL;
 				}
-			lwsl_vhost_err(vh, "protocol %s failed init",
+				lwsl_vhost_warn(vh, "protocol %s failed init",
 					vh->protocols[n].name);
 
-				return 1;
+
+			} else
+				vh->protocol_init |= 1u << n;
+		}
+	}
+
+	/* Pass 2: init non-plugins */
+
+	for (n = 0; n < vh->count_protocols; n++) {
+		if (n >= vh->plugin_protocol_bind &&
+		    n < vh->plugin_protocol_bind + vh->plugin_protocol_count)
+			continue;
+
+		lwsa->protocol = &vh->protocols[n];
+		if (!vh->protocols[n].name)
+			continue;
+
+		pvo = lws_vhost_protocol_options(vh, vh->protocols[n].name);
+		if (pvo) {
+			/*
+			 * linked list of options specific to
+			 * vh + protocol
+			 */
+			pvo1 = pvo;
+			pvo = pvo1->options;
+
+			while (pvo) {
+				lwsl_vhost_debug(vh, "protocol \"%s\", "
+						     "option \"%s\"",
+						     vh->protocols[n].name,
+						     pvo->name);
+
+				if (!strcmp(pvo->name, "default")) {
+					lwsl_vhost_info(vh, "Setting default "
+							     "protocol to %s",
+							     vh->protocols[n].name);
+					vh->default_protocol_index = (unsigned char)n;
+				}
+				if (!strcmp(pvo->name, "raw")) {
+					lwsl_vhost_info(vh, "Setting raw "
+							     "protocol to %s",
+							     vh->protocols[n].name);
+					vh->raw_protocol_index = (unsigned char)n;
+				}
+				pvo = pvo->next;
 			}
+		} else
+			lwsl_vhost_debug(vh, "not instantiating %s",
+					     vh->protocols[n].name);
+
+#if defined(LWS_WITH_TLS)
+		if (any)
+			*any |= !!vh->tls.ssl_ctx;
+#endif
+
+		pvo = lws_vhost_protocol_options(vh, vh->protocols[n].name);
+
+		/*
+		 * inform all the protocols that they are doing their
+		 * one-time initialization if they want to.
+		 *
+		 * NOTE the fakewsi is garbage, except the key pointers that are
+		 * prepared in case the protocol handler wants to touch them
+		 */
+
+		if (pvo || (vh->options & LWS_SERVER_OPTION_VH_INSTANTIATE_ALL_PROTOCOLS)
+
+#if !defined(LWS_WITH_PLUGINS)
+				/*
+				 * with plugins, you have to explicitly
+				 * instantiate them per-vhost with pvos.
+				 *
+				 * Without plugins, not setting the vhost pvo
+				 * list at creation enables all the protocols
+				 * by default, for backwards compatibility
+				 */
+				|| !vh->pvo
+#endif
+		) {
+			lwsl_vhost_info(vh, "init %s.%s", vh->name,
+					vh->protocols[n].name);
+			if (vh->protocols[n].callback((struct lws *)lwsa,
+					LWS_CALLBACK_PROTOCOL_INIT, NULL,
+					(void *)(pvo ? pvo->options : NULL),
+					0)) {
+				if (vh->protocol_vh_privs && vh->protocol_vh_privs[n]) {
+					lws_free(vh->protocol_vh_privs[n]);
+					vh->protocol_vh_privs[n] = NULL;
+				}
+				lwsl_vhost_warn(vh, "protocol %s failed init",
+					vh->protocols[n].name);
+
+
+			} else
+				vh->protocol_init |= 1u << n;
 		}
 	}
 
@@ -499,7 +599,7 @@ int
 lws_protocol_init(struct lws_context *context)
 {
 	struct lws_vhost *vh = context->vhost_list;
-	int any = 0, r = 0;
+	int any = 0, r = 0, spd = 0;
 
 	if (context->doing_protocol_init)
 		return 0;
@@ -509,6 +609,8 @@ lws_protocol_init(struct lws_context *context)
 	lwsl_cx_info(context, "\n");
 
 	while (vh) {
+
+		spd |= lws_check_opt(vh->options, LWS_SERVER_OPTION_VH_SKIP_PRIV_DROP);
 
 		/* only do the protocol init once for a given vhost */
 		if (vh->created_vhost_protocols ||
@@ -531,7 +633,8 @@ next:
 	if (!context->protocol_init_done) {
 
 		context->protocol_init_done = 1;
-		lws_finalize_startup(context);
+		if (!spd)
+			lws_finalize_startup(context, __func__);
 
 		return 0;
 	}
@@ -582,14 +685,21 @@ lws_create_vhost(struct lws_context *context,
 	struct lws_plugin *plugin = context->plugin_list;
 #endif
 	struct lws_protocols *lwsp;
-	int m, f = !info->pvo, fx = 0, abs_pcol_count = 0, sec_pcol_count = 0;
+	int m, f = !info->pvo, fx = 0, abs_pcol_count = 0, sec_pcol_count = 0, dht_count = 0;
 	const char *name = "default";
 	char buf[96];
 	char *p;
 #if defined(LWS_WITH_SYS_ASYNC_DNS)
 	extern struct lws_protocols lws_async_dns_protocol;
 #endif
+#if defined(LWS_WITH_DHT)
+	extern const struct lws_protocols lws_dht_protocol;
+#endif
+#if defined(LWS_WITH_CLIENT)
+	extern const struct lws_protocols lws_async_ipc_protocol;
+#endif
 	int n;
+
 
 	if (!pcols && context->protocols_copy)
 		pcols = context->protocols_copy;
@@ -692,8 +802,7 @@ lws_create_vhost(struct lws_context *context,
 			info->pprotocols[vh->count_protocols];
 			vh->count_protocols++)
 				;
-			//lwsl_user("%s: ppcols: %s\n", __func__,
-			// info->pprotocols[vh->count_protocols]->name);
+
 	} else
 		for (vh->count_protocols = 0;
 			pcols[vh->count_protocols].callback;
@@ -737,6 +846,38 @@ lws_create_vhost(struct lws_context *context,
 		lws_strncpy(vh->tls.ecdh_curve, info->ecdh_curve,
 			    sizeof(vh->tls.ecdh_curve));
 
+	if (info->ssl_cipher_list)
+		vh->tls.cfg_ssl_cipher_list = lws_strdup(info->ssl_cipher_list);
+	if (info->tls1_3_plus_cipher_list)
+		vh->tls.cfg_tls1_3_plus_cipher_list = lws_strdup(info->tls1_3_plus_cipher_list);
+#if defined(LWS_WITH_CLIENT)
+	if (info->client_ssl_cipher_list)
+		vh->tls.cfg_tls_client_cipher_list = lws_strdup(info->client_ssl_cipher_list);
+#endif
+	if (info->tls_ciphers_iana)
+		vh->tls.cfg_tls_ciphers_iana = lws_strdup(info->tls_ciphers_iana);
+	if (info->ssl_ca_filepath)
+		vh->tls.cfg_ssl_ca_filepath = lws_strdup(info->ssl_ca_filepath);
+
+	vh->tls.cfg_server_ssl_cert_mem = info->server_ssl_cert_mem;
+	vh->tls.cfg_server_ssl_cert_mem_len = info->server_ssl_cert_mem_len;
+	vh->tls.cfg_server_ssl_privkey_mem = info->server_ssl_private_key_mem;
+	vh->tls.cfg_server_ssl_privkey_mem_len = info->server_ssl_private_key_mem_len;
+	vh->tls.cfg_server_ssl_ca_mem = info->server_ssl_ca_mem;
+	vh->tls.cfg_server_ssl_ca_mem_len = info->server_ssl_ca_mem_len;
+
+#if defined(LWS_WITH_CLIENT)
+	vh->tls.cfg_client_ssl_ca_mem = info->client_ssl_ca_mem;
+	vh->tls.cfg_client_ssl_ca_mem_len = info->client_ssl_ca_mem_len;
+	vh->tls.cfg_client_ssl_cert_mem = info->client_ssl_cert_mem;
+	vh->tls.cfg_client_ssl_cert_mem_len = info->client_ssl_cert_mem_len;
+	vh->tls.cfg_client_ssl_key_mem = info->client_ssl_key_mem;
+	vh->tls.cfg_client_ssl_key_mem_len = info->client_ssl_key_mem_len;
+#endif
+
+	vh->tls.ssl_options_set = info->ssl_options_set;
+	vh->tls.ssl_options_clear = info->ssl_options_clear;
+
 	/* carefully allocate and take a copy of cert + key paths if present */
 	n = 0;
 	if (info->ssl_cert_filepath)
@@ -745,16 +886,18 @@ lws_create_vhost(struct lws_context *context,
 		n += (int)strlen(info->ssl_private_key_filepath) + 1;
 
 	if (n) {
-		vh->tls.key_path = vh->tls.alloc_cert_path =
+		vh->tls.cfg_key_path = vh->tls.cfg_alloc_cert_path =
 					lws_malloc((unsigned int)n, "vh paths");
+		if (!vh->tls.cfg_alloc_cert_path)
+			goto bail;
 		if (info->ssl_cert_filepath) {
 			n = (int)strlen(info->ssl_cert_filepath) + 1;
-			memcpy(vh->tls.alloc_cert_path,
+			memcpy(vh->tls.cfg_alloc_cert_path,
 			       info->ssl_cert_filepath, (unsigned int)n);
-			vh->tls.key_path += n;
+			vh->tls.cfg_key_path += n;
 		}
 		if (info->ssl_private_key_filepath)
-			memcpy(vh->tls.key_path, info->ssl_private_key_filepath,
+			memcpy(vh->tls.cfg_key_path, info->ssl_private_key_filepath,
 			       strlen(info->ssl_private_key_filepath) + 1);
 	}
 #endif
@@ -767,6 +910,9 @@ lws_create_vhost(struct lws_context *context,
 #endif
 #if defined(LWS_WITH_SECURE_STREAMS)
 	sec_pcol_count = (int)LWS_ARRAY_SIZE(available_secstream_protocols) - 1;
+#endif
+#if defined(LWS_WITH_DHT)
+	dht_count = 1;
 #endif
 
 	/*
@@ -785,6 +931,10 @@ lws_create_vhost(struct lws_context *context,
 				((unsigned int)vh->count_protocols +
 				   (unsigned int)abs_pcol_count +
 				   (unsigned int)sec_pcol_count +
+				   (unsigned int)dht_count +
+#if defined(LWS_WITH_CLIENT)
+				   1 +
+#endif
 				   (unsigned int)context->plugin_protocol_count +
 				   (unsigned int)fx + 1), "vh plugin table");
 	if (!lwsp) {
@@ -843,17 +993,32 @@ lws_create_vhost(struct lws_context *context,
 	}
 #endif
 
+#if defined(LWS_WITH_DHT)
+	memcpy(&lwsp[m], &lws_dht_protocol, sizeof(*lwsp));
+	m++;
+	vh->count_protocols++;
+#endif
+
+#if defined(LWS_WITH_CLIENT)
+	memcpy(&lwsp[m], &lws_async_ipc_protocol, sizeof(*lwsp));
+	m++;
+	vh->count_protocols++;
+#endif
+
+
 	/*
 	 * 3: For compatibility, all protocols enabled on vhost if only
 	 * the default vhost exists.  Otherwise only vhosts who ask
 	 * for a protocol get it enabled.
 	 */
 
-	if (context->options & LWS_SERVER_OPTION_EXPLICIT_VHOSTS)
+	if ((context->options & LWS_SERVER_OPTION_EXPLICIT_VHOSTS) &&
+	    !(vh->options & LWS_SERVER_OPTION_VH_INSTANTIATE_ALL_PROTOCOLS))
 		f = 0;
 	(void)f;
 #ifdef LWS_WITH_PLUGINS
 	if (plugin) {
+		vh->plugin_protocol_bind = m;
 		while (plugin) {
 			const lws_plugin_protocol_t *plpr =
 				(const lws_plugin_protocol_t *)plugin->hdr;
@@ -870,6 +1035,7 @@ lws_create_vhost(struct lws_context *context,
 					       sizeof(struct lws_protocols));
 					m++;
 					vh->count_protocols++;
+					vh->plugin_protocol_count++;
 				}
 			}
 			plugin = plugin->list;
@@ -982,6 +1148,8 @@ lws_create_vhost(struct lws_context *context,
 
 	vh->ka_time = info->ka_time;
 	vh->ka_interval = info->ka_interval;
+
+	vh->quic_mtu = info->quic_mtu ? info->quic_mtu : 1280;
 	vh->ka_probes = info->ka_probes;
 
 	if (vh->options & LWS_SERVER_OPTION_STS)
@@ -1078,6 +1246,14 @@ early_bail:
 	return NULL;
 }
 
+void
+lws_vhost_set_mounts(struct lws_vhost *vh, const struct lws_http_mount *mounts)
+{
+#if defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2)
+        vh->http.mount_list = mounts;
+#endif
+}
+
 int
 lws_init_vhost_client_ssl(const struct lws_context_creation_info *info,
 			  struct lws_vhost *vhost)
@@ -1100,7 +1276,7 @@ void
 lws_cancel_service(struct lws_context *context)
 {
 	struct lws_context_per_thread *pt = &context->pt[0];
-	short m;
+	unsigned short m;
 
 	if (context->service_no_longer_possible)
 		return;
@@ -1228,8 +1404,7 @@ __lws_vhost_destroy_pt_wsi_dieback_start(struct lws_vhost *vh)
 		if (w->tsi == tsi) {
 
 			lwsl_vhost_debug(vh, "closing aso");
-			lws_close_free_wsi(w, LWS_CLOSE_STATUS_NOSTATUS,
-					   "awaiting skt");
+			lws_wsi_close(w, LWS_TO_KILL_ASYNC);
 		}
 
 	} lws_end_foreach_dll_safe(d, d1);
@@ -1329,6 +1504,7 @@ lws_vhost_destroy1(struct lws_vhost *vh)
 #endif
 
 	vh->being_destroyed = 1;
+	vh->count_bound_wsi++; /* protect from opportunistic destroy */
 	lws_dll2_add_tail(&vh->vh_being_destroyed_list,
 			  &context->owner_vh_being_destroyed);
 
@@ -1416,6 +1592,7 @@ lws_vhost_destroy1(struct lws_vhost *vh)
 	lws_sul_cancel(&vh->sul_unref);
 #endif
 
+	vh->count_bound_wsi--;
 	lws_vhost_unlock(vh); /* } vh -------------- */
 
 	for (n = 0; n < context->count_threads; n++)
@@ -1449,7 +1626,11 @@ __lws_vhost_destroy2(struct lws_vhost *vh)
 {
 	const struct lws_protocols *protocol = NULL;
 	struct lws_context *context = vh->context;
+#if defined(__COVERITY__)
+	struct lws wsi = { 0 };
+#else
 	struct lws wsi;
+#endif
 	int n;
 
 	vh->being_destroyed = 0;
@@ -1474,20 +1655,27 @@ __lws_vhost_destroy2(struct lws_vhost *vh)
 	 * let the protocols destroy the per-vhost protocol objects
 	 */
 
-	memset(&wsi, 0, sizeof(wsi));
+#if !defined(__COVERITY__)
+	memset((void *)&wsi, 0, sizeof(wsi));
+#endif
 	wsi.a.context = vh->context;
 	wsi.a.vhost = vh; /* not a real bound wsi */
+
+#if defined(LWS_WITH_DHT)
+	lws_dht_destroy_all_on_vhost(vh);
+#endif
+
 	protocol = vh->protocols;
 	if (protocol && vh->created_vhost_protocols) {
 		n = 0;
 		while (n < vh->count_protocols) {
 			wsi.a.protocol = protocol;
 
-			lwsl_vhost_debug(vh, "protocol destroy");
-
-			if (protocol->callback)
+			if (protocol->callback && (vh->protocol_init & (1u << n))) {
+				lwsl_vhost_debug(vh, "protocol %s destroy", protocol->name);
 				protocol->callback(&wsi, LWS_CALLBACK_PROTOCOL_DESTROY,
 					   NULL, NULL, 0);
+			}
 			protocol++;
 			n++;
 		}
@@ -1542,6 +1730,9 @@ __lws_vhost_destroy2(struct lws_vhost *vh)
 	}
 	if (vh->protocol_vh_privs)
 		lws_free(vh->protocol_vh_privs);
+#if defined(LWS_WITH_SERVER)
+	lws_tls_ctx_ref_destroy_all(vh);
+#endif
 	lws_ssl_SSL_CTX_destroy(vh);
 	lws_free(vh->same_vh_protocol_owner);
 
@@ -1549,7 +1740,6 @@ __lws_vhost_destroy2(struct lws_vhost *vh)
 #if defined(LWS_WITH_PLUGINS)
 		context->plugin_list ||
 #endif
-	    (context->options & LWS_SERVER_OPTION_EXPLICIT_VHOSTS) ||
 	    vh->allocated_vhost_protocols)
 		lws_free((void *)vh->protocols);
 #if defined(LWS_WITH_NETWORK)
@@ -1566,7 +1756,13 @@ __lws_vhost_destroy2(struct lws_vhost *vh)
 #endif
 
 #if defined (LWS_WITH_TLS)
-	lws_free_set_NULL(vh->tls.alloc_cert_path);
+	lws_free_set_NULL(vh->tls.cfg_alloc_cert_path);
+	lws_free_set_NULL(vh->tls.cfg_ssl_cipher_list);
+	lws_free_set_NULL(vh->tls.cfg_tls1_3_plus_cipher_list);
+	lws_free_set_NULL(vh->tls.cfg_tls_client_cipher_list);
+	lws_free_set_NULL(vh->tls.cfg_tls_ciphers_iana);
+	lws_free_set_NULL(vh->tls.cfg_ssl_ca_filepath);
+	vh->tls.cfg_key_path = NULL;
 #endif
 
 #if LWS_MAX_SMP > 1
@@ -1654,8 +1850,10 @@ lws_vhost_destroy(struct lws_vhost *vh)
 	/* dispose of the listen socket one way or another */
 	lws_vhost_destroy1(vh);
 
+	vh->count_bound_wsi++; /* protect from opportunistic destroy */
 	/* start async closure of all wsi on this pt thread attached to vh */
 	__lws_vhost_destroy_pt_wsi_dieback_start(vh);
+	vh->count_bound_wsi--;
 
 	lwsl_vhost_info(vh, "count_bound_wsi %d", vh->count_bound_wsi);
 
@@ -1776,7 +1974,7 @@ lws_vhost_active_conns(struct lws *wsi, struct lws **nwsi, const char *adsin)
 	char newconn_cannot_use_h1 = 0;
 
 	if ((wsi->tls.use_ssl & LCCSCF_USE_SSL) &&
-	    my_alpn && !strstr(my_alpn, "http/1.1"))
+	    my_alpn && !(char *)strstr(my_alpn, "http/1.1"))
 		/*
 		 * new guy wants to use tls, he specifies the alpn and he does
 		 * not list h1 as a choice ==> he can't bind to existing h1
@@ -1863,7 +2061,7 @@ lws_vhost_active_conns(struct lws *wsi, struct lws **nwsi, const char *adsin)
 			     lwsi_state(w) == LRS_ESTABLISHED ||
 			     lwsi_state(w) == LRS_IDLING)) {
 
-				lwsl_wsi_notice(w, "just join h2 directly 0x%x",
+				lwsl_wsi_info(w, "just join h2 directly 0x%x",
 						   lwsi_state(w));
 
 				if (lwsi_state(w) == LRS_IDLING)
@@ -1910,7 +2108,7 @@ lws_vhost_active_conns(struct lws *wsi, struct lws **nwsi, const char *adsin)
 			 * to get there or fail.
 			 */
 
-			lwsl_wsi_notice(wsi, "apply txn queue %s, state 0x%lx",
+			lwsl_wsi_info(wsi, "apply txn queue %s, state 0x%lx",
 					     lws_wsi_tag(w),
 					     (unsigned long)w->wsistate);
 			/*

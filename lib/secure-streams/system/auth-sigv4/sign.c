@@ -464,7 +464,7 @@ lws_ss_sigv4_set_aws_key(struct lws_context* context, uint8_t idx,
 
 #if defined(__linux__) || defined(__APPLE__) || defined(WIN32) || \
 	defined(__FreeBSD__) || defined(__NetBSD__) || defined(__ANDROID__) || \
-	defined(__sun) || defined(__OpenBSD__)
+	defined(__sun) || defined(__OpenBSD__) || defined(__NuttX__)
 
 /* ie, if we have filesystem ops */
 
@@ -509,7 +509,7 @@ lws_aws_filesystem_credentials_helper(const char *path, const char *kid,
 			if (strncmp(line, i ? kid : ak, strlen(i ? kid : ak)))
 				continue;
 
-			str = strchr(line, '=');
+			str = (char *)strchr(line, '=');
 			if (!str)
 				continue;
 

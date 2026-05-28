@@ -59,7 +59,7 @@ __lws_lc_tag(struct lws_context *context, lws_lifecycle_group_t *grp,
 	if (*lc->gutag == '[') {
 		/* appending inside [] */
 
-		char *cp = strchr(lc->gutag, ']');
+		char *cp = (char *)strchr(lc->gutag, ']');
 		char rend[96];
 		size_t ll, k;
 		int n;
@@ -124,7 +124,7 @@ __lws_lc_tag(struct lws_context *context, lws_lifecycle_group_t *grp,
 	lwsl_refcount_cx(lc->log_cx, 1);
 
 #if defined(LWS_LOG_TAG_LIFECYCLE)
-	lwsl_cx_notice(context, " ++ %s (%d)", lc->gutag, (int)grp->owner.count);
+	lwsl_cx_info(context, " ++ %s (%d)", lc->gutag, (int)grp->owner.count);
 #endif
 }
 
@@ -145,6 +145,11 @@ __lws_lc_tag_append(lws_lifecycle_t *lc, const char *app)
 
 	if (n && lc->gutag[n - 1] == ']')
 		n--;
+
+	if (!lc->recycle_len)
+		lc->recycle_len = (uint8_t)n;
+	else
+		n = lc->recycle_len;
 
 	n += lws_snprintf(&lc->gutag[n], sizeof(lc->gutag) - 2u -
 					 (unsigned int)n, "|%s]", app);
@@ -179,12 +184,12 @@ __lws_lc_untag(struct lws_context *context, lws_lifecycle_t *lc)
 
 	//grp = lws_container_of(lc->list.owner, lws_lifecycle_group_t, owner);
 
-	lws_humanize(buf, sizeof(buf),
-		     (uint64_t)lws_now_usecs() - lc->us_creation,
-		     humanize_schema_us);
-
 #if defined(LWS_LOG_TAG_LIFECYCLE)
-	lwsl_cx_notice(context, " -- %s (%d) %s", lc->gutag,
+	if (lws_humanize(buf, sizeof(buf),
+		     (uint64_t)lws_now_usecs() - lc->us_creation,
+		     humanize_schema_us) > 0)
+
+	lwsl_cx_info(context, " -- %s (%d) %s", lc->gutag,
 		    (int)lc->list.owner->count - 1, buf);
 #endif
 
@@ -260,6 +265,24 @@ lwsl_timestamp(int level, char *p, size_t len)
 
 	return 0;
 }
+
+uint32_t
+lws_log_ratelimit_check(lws_log_ratelimit_t *rl, int64_t interval_us)
+{
+	lws_usec_t now = lws_now_usecs();
+
+	if (now >= rl->next_log_us) {
+		uint32_t r = rl->dropped + 1;
+		rl->next_log_us = now + interval_us;
+		rl->dropped = 0;
+		return r;
+	}
+
+	rl->dropped++;
+
+	return 0;
+}
+
 
 #ifndef LWS_PLAT_OPTEE
 static const char * const colours[] = {
@@ -364,15 +387,18 @@ lws_log_use_cx_file(struct lws_log_cx *cx, int _new)
 #if !(defined(LWS_PLAT_OPTEE) && !defined(LWS_WITH_NETWORK))
 void
 __lws_logv(lws_log_cx_t *cx, lws_log_prepend_cx_t prep, void *obj,
-	   int filter, const char *_fun, const char *format, va_list vl)
+	   int filter, uint32_t dropped, const char *_fun, const char *format, va_list vl)
 {
 #if LWS_MAX_SMP == 1 && !defined(LWS_WITH_THREADPOOL)
 	/* this is incompatible with multithreaded logging */
-	static char buf[256];
+	static char buf[256], prev_buf[256];
 #else
 	char buf[1024];
+	static char prev_buf[1024];
 #endif
-	char *p = buf, *end = p + sizeof(buf) - 1;
+	static uint32_t log_dupes;
+	static lws_usec_t last_log_dupe_emit;
+	char *p = buf, *end = p + sizeof(buf) - 1, *body_start;
 	lws_log_cx_t *cxp;
 	int n, back = 0;
 
@@ -405,6 +431,8 @@ __lws_logv(lws_log_cx_t *cx, lws_log_prepend_cx_t prep, void *obj,
 		lwsl_timestamp(filter, buf, sizeof(buf));
 		p += strlen(buf);
 	}
+
+	body_start = p;
 
 	/*
 	 * prepend parent log ctx content first
@@ -448,13 +476,37 @@ __lws_logv(lws_log_cx_t *cx, lws_log_prepend_cx_t prep, void *obj,
 		*p++ = '.';
 		*p++ = '\n';
 		*p++ = '\0';
-	} else
+	} else {
 		if (n > 0) {
 			p += n;
-			if (p[-1] != '\n')
+			if (p[-1] == '\n')
+				p--;
+			if (dropped > 1)
+				p += lws_snprintf(p, lws_ptr_diff_size_t(end, p), " (dropped %u logs)", (unsigned int)(dropped - 1));
+			if (p < end - 1) {
 				*p++ = '\n';
-			*p = '\0';
+				*p = '\0';
+			}
 		}
+	}
+
+	if (!strcmp(body_start, prev_buf)) {
+		log_dupes++;
+		if (lws_now_usecs() - last_log_dupe_emit < 1000000)
+			return;
+
+		p = body_start + strlen(body_start);
+		if (p > buf && p[-1] == '\n')
+			p--;
+		p += lws_snprintf(p, lws_ptr_diff_size_t(end, p),
+				  " (swallowed %u dupes)\n", (unsigned int)log_dupes);
+		log_dupes = 0;
+		last_log_dupe_emit = lws_now_usecs();
+	} else {
+		lws_strncpy(prev_buf, body_start, sizeof(prev_buf));
+		log_dupes = 0;
+		last_log_dupe_emit = lws_now_usecs();
+	}
 
 	/*
 	 * The actual emit
@@ -468,7 +520,7 @@ __lws_logv(lws_log_cx_t *cx, lws_log_prepend_cx_t prep, void *obj,
 
 void _lws_logv(int filter, const char *format, va_list vl)
 {
-	__lws_logv(&log_cx, NULL, NULL, filter, NULL, format, vl);
+	__lws_logv(&log_cx, NULL, NULL, filter, 0, NULL, format, vl);
 }
 
 void _lws_log(int filter, const char *format, ...)
@@ -476,7 +528,16 @@ void _lws_log(int filter, const char *format, ...)
 	va_list ap;
 
 	va_start(ap, format);
-	__lws_logv(&log_cx, NULL, NULL, filter, NULL, format, ap);
+	__lws_logv(&log_cx, NULL, NULL, filter, 0, NULL, format, ap);
+	va_end(ap);
+}
+
+void _lws_log_rl(int filter, uint32_t dropped, const char *format, ...)
+{
+	va_list ap;
+
+	va_start(ap, format);
+	__lws_logv(&log_cx, NULL, NULL, filter, dropped, NULL, format, ap);
 	va_end(ap);
 }
 
@@ -489,7 +550,20 @@ void _lws_log_cx(lws_log_cx_t *cx, lws_log_prepend_cx_t prep, void *obj,
 		cx = &log_cx;
 
 	va_start(ap, format);
-	__lws_logv(cx, prep, obj, filter, _fun, format, ap);
+	__lws_logv(cx, prep, obj, filter, 0, _fun, format, ap);
+	va_end(ap);
+}
+
+void _lws_log_cx_rl(lws_log_cx_t *cx, lws_log_prepend_cx_t prep, void *obj,
+		 int filter, uint32_t dropped, const char *_fun, const char *format, ...)
+{
+	va_list ap;
+
+	if (!cx)
+		cx = &log_cx;
+
+	va_start(ap, format);
+	__lws_logv(cx, prep, obj, filter, dropped, _fun, format, ap);
 	va_end(ap);
 }
 #endif

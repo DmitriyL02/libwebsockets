@@ -1,3 +1,4 @@
+#include <sys/wait.h>
 /*
  * lws-minimal-secure-streams
  *
@@ -21,6 +22,41 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_BUDGET,
+	LWS_SW_EXPECTED_EXIT,
+	LWS_SW_FORCE_NO_INTERNET,
+	LWS_SW_FORCE_PORTAL,
+	LWS_SW_OTS,
+	LWS_SW_PASS_LIMIT,
+	LWS_SW_RESPMAP,
+	LWS_SW_TIMEOUT_MS,
+	LWS_SW_A,
+	LWS_SW_C,
+	LWS_SW_D,
+	LWS_SW_I,
+	LWS_SW_P,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_BUDGET]	= { "--budget",        "Enable --budget feature" },
+	[LWS_SW_EXPECTED_EXIT]	= { "--expected-exit", "Enable --expected-exit feature" },
+	[LWS_SW_FORCE_NO_INTERNET]	= { "--force-no-internet", "Enable --force-no-internet feature" },
+	[LWS_SW_FORCE_PORTAL]	= { "--force-portal",  "Enable --force-portal feature" },
+	[LWS_SW_OTS]	= { "--ots",           "Enable --ots feature" },
+	[LWS_SW_PASS_LIMIT]	= { "--pass-limit",    "Enable --pass-limit feature" },
+	[LWS_SW_RESPMAP]	= { "--respmap",       "Enable --respmap feature" },
+	[LWS_SW_TIMEOUT_MS]	= { "--timeout_ms",    "Enable --timeout_ms feature" },
+	[LWS_SW_A]	= { "-a",              "Enable -a feature" },
+	[LWS_SW_C]	= { "-c",              "Client connections" },
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_I]	= { "-i",              "Interface to bind to" },
+	[LWS_SW_P]	= { "-p",              "Port number to listen or connect on" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 
@@ -88,7 +124,7 @@ static const char * const default_ss_policy =
 		 * using that.
 		 */
 #if !defined(FORCE_OS_TRUST_STORE)
-	  		"{\"isrg_root_x1\": \""
+					"{\"isrg_root_x1\": \""
 	"MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw"
 	"TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh"
 	"cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4"
@@ -116,8 +152,22 @@ static const char * const default_ss_policy =
 	"jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc"
 	"oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq"
 	"4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA"
-	"mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d"
-	"emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc="
+	"mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57de"
+	"myPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc="
+	  "\"},\n"
+		"{\"isrg_root_x2\": \""
+	"MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw"
+	"CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg"
+	"R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00"
+	"MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT"
+	"ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw"
+	"EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW"
+	"+1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9"
+	"ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T"
+	"AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI"
+	"zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW"
+	"tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1"
+	"/q4AaOeMSQ+2b1tbFfLn"
 		"\"}"
 #endif
 	  "],"
@@ -126,7 +176,8 @@ static const char * const default_ss_policy =
 		"{"
 			"\"name\": \"le_via_isrg\","
 			"\"stack\": ["
-				"\"isrg_root_x1\""
+				"\"isrg_root_x1\","
+				"\"isrg_root_x2\""
 			"]"
 		"}"
 #endif
@@ -234,7 +285,8 @@ process_timeout(lws_sorted_usec_list_t *sul)
 {
 	lwsl_err("%s: process timed out\n", __func__);
 
-	exit(1);
+	interrupted = 1;
+	bad = 1;
 }
 
 /* secure streams payload interface */
@@ -303,8 +355,8 @@ myss_state(void *userobj, void *sh, lws_ss_constate_t state,
 		};
 #endif
 
-	lwsl_ss_user(m->ss, "%s (%d), ord 0x%x",
-		  lws_ss_state_name((int)state), state, (unsigned int)ack);
+	lwsl_ss_user(m->ss, "%s, ord 0x%x",
+		  lws_ss_state_name(state), (unsigned int)ack);
 
 	switch (state) {
 	case LWSSSCS_CREATING:
@@ -559,19 +611,26 @@ int main(int argc, const char **argv)
 	int n = 0, expected = 0, concurrent = 1;
 	char cxname[16], logpath[128];
 	const char *p;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	signal(SIGINT, sigint_handler);
 
 	memset(&info, 0, sizeof info);
 	lws_cmdline_option_handle_builtin(argc, argv, &info);
 
-	if ((p = lws_cmdline_option(argc, argv, "-c")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_C].sw)))
 		concurrent = atoi(p);
 
 	if (concurrent < 0 || concurrent > 100)
 		return 1;
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		my_log_cx.lll_flags = (uint32_t)(LLLF_LOG_CONTEXT_AWARE | atoi(p));
 
 	lws_strncpy(cxname, "ctx0", sizeof(cxname));
@@ -601,32 +660,32 @@ int main(int argc, const char **argv)
 
 	/* these options are mutually exclusive if given */
 
-	if (lws_cmdline_option(argc, argv, "--force-portal"))
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_FORCE_PORTAL].sw))
 		force_cpd_fail_portal = 1;
 
-	if (lws_cmdline_option(argc, argv, "--force-no-internet"))
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_FORCE_NO_INTERNET].sw))
 		force_cpd_fail_no_internet = 1;
 
-	if (lws_cmdline_option(argc, argv, "--respmap"))
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_RESPMAP].sw))
 		test_respmap = 1;
 
-	if (lws_cmdline_option(argc, argv, "--ots"))
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_OTS].sw))
 		/*
 		 * Use a streamtype that relies on the OS trust store for
 		 * validation
 		 */
 		test_ots = 1;
 
-	if ((p = lws_cmdline_option(argc, argv, "--timeout_ms")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_TIMEOUT_MS].sw)))
 		timeout_ms = (unsigned int)atoi(p);
 
-	if ((p = lws_cmdline_option(argc, argv, "--budget")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_BUDGET].sw)))
 		budget = atoi(p);
 
 	predicted_good = budget;
 	orig_budget = budget;
 
-	if ((p = lws_cmdline_option(argc, argv, "--pass-limit")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_PASS_LIMIT].sw)))
 		predicted_good = atoi(p);
 
 	info.fd_limit_per_thread = 1 + 26 + 1;
@@ -638,17 +697,17 @@ int main(int argc, const char **argv)
 
 		/* connect to ssproxy via UDS by default, else via
 		 * tcp connection to this port */
-		if ((p = lws_cmdline_option(argc, argv, "-p")))
+		if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_P].sw)))
 			info.ss_proxy_port = (uint16_t)atoi(p);
 
 		/* UDS "proxy.ss.lws" in abstract namespace, else this socket
 		 * path; when -p given this can specify the network interface
 		 * to bind to */
-		if ((p = lws_cmdline_option(argc, argv, "-i")))
+		if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_I].sw)))
 			info.ss_proxy_bind = p;
 
 		/* if -p given, -a specifies the proxy address to connect to */
-		if ((p = lws_cmdline_option(argc, argv, "-a")))
+		if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_A].sw)))
 			info.ss_proxy_address = p;
 	}
 #else
@@ -690,7 +749,7 @@ int main(int argc, const char **argv)
 	/* timeout for each forked process */
 
 	lws_sul_schedule(context, 0, &sul_timeout, process_timeout,
-			 (lws_usec_t)((lws_usec_t)budget *
+			 (lws_usec_t)((lws_usec_t)budget * 3 *
 				       (lws_usec_t)timeout_ms * LWS_US_PER_MS));
 
 #if !defined(LWS_SS_USE_SSPC)
@@ -743,14 +802,26 @@ bail:
 	if (good < predicted_good)
 		bad = 1;
 
-	if ((p = lws_cmdline_option(argc, argv, "--expected-exit")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_EXPECTED_EXIT].sw)))
 		expected = atoi(p);
 
 	if (bad == expected) {
 		lwsl_user("Completed: OK (seen expected %d)\n", expected);
-		return 0;
-	} else
+		bad = 0;
+	} else {
 		lwsl_err("Completed: failed: exit %d, expected %d\n", bad, expected);
+		bad = 1;
+	}
 
-	return 1;
+#if !defined(WIN32)
+	{
+		int status;
+		while (waitpid(-1, &status, 0) > 0) {
+			if (WIFEXITED(status) && WEXITSTATUS(status))
+				bad = 1;
+		}
+	}
+#endif
+
+	return bad;
 }

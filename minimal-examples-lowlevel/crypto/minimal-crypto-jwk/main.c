@@ -8,6 +8,37 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_ALG,
+	LWS_SW_CURVE,
+	LWS_SW_KEY_OPS,
+	LWS_SW_KID,
+	LWS_SW_PUBLIC,
+	LWS_SW_USE,
+	LWS_SW_B,
+	LWS_SW_C,
+	LWS_SW_D,
+	LWS_SW_T,
+	LWS_SW_V,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_ALG]	= { "--alg",           "Set the 'alg' JWS algorithm (e.g. RS256)" },
+	[LWS_SW_CURVE]	= { "--curve",         "Set the EC curve (e.g. P-256)" },
+	[LWS_SW_KEY_OPS]	= { "--key-ops",       "Set the 'key_ops' (e.g. sign, verify)" },
+	[LWS_SW_KID]	= { "--kid",           "Set the 'kid' Key ID" },
+	[LWS_SW_PUBLIC]	= { "--public",        "Output public key only to specified file" },
+	[LWS_SW_USE]	= { "--use",           "Set the 'use' intended usage (e.g. sig)" },
+	[LWS_SW_B]	= { "-b",              "Number of bits to generate (e.g. 2048, 4096)" },
+	[LWS_SW_C]	= { "-c",              "Format output as C array for header files" },
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_T]	= { "-t",              "Key type to generate (RSA, EC, OCT)" },
+	[LWS_SW_V]	= { "-v",              "Alias for --curve" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information (-h, --help)" },
+};
+
 #include <sys/types.h>
 #include <fcntl.h>
 
@@ -76,20 +107,27 @@ int main(int argc, const char **argv)
 	int bits = 4096;
 	char key[32768];
 	int vl = sizeof(key);
+	(void)switches;
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((argc == 1) || lws_cmdline_option(argc, argv, "-h") || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
+
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
 	lwsl_user("LWS JWK example\n");
 
-	if ((p = lws_cmdline_option(argc, argv, "-b")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_B].sw)))
 		bits = atoi(p);
 
-	if ((p = lws_cmdline_option(argc, argv, "--curve")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_CURVE].sw)))
 		curve = p;
 
-	if ((p = lws_cmdline_option(argc, argv, "-t"))) {
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_T].sw))) {
 		if (!strcmp(p, "RSA"))
 			kty = LWS_GENCRYPTO_KTY_RSA;
 		else
@@ -118,7 +156,7 @@ int main(int argc, const char **argv)
 		return 1;
 	}
 
-	if ((p = lws_cmdline_option(argc, argv, "-v")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_V].sw)))
 		curve = p;
 
 	if (lws_jwk_generate(context, &jwk, kty, bits, curve)) {
@@ -127,19 +165,19 @@ int main(int argc, const char **argv)
 		return 1;
 	}
 
-	if ((p = lws_cmdline_option(argc, argv, "--kid")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_KID].sw)))
 		lws_jwk_strdup_meta(&jwk, JWK_META_KID, p, (int)strlen(p));
 
-	if ((p = lws_cmdline_option(argc, argv, "--use")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_USE].sw)))
 		lws_jwk_strdup_meta(&jwk, JWK_META_USE, p, (int)strlen(p));
 
-	if ((p = lws_cmdline_option(argc, argv, "--alg")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_ALG].sw)))
 		lws_jwk_strdup_meta(&jwk, JWK_META_ALG, p, (int)strlen(p));
 
-	if ((p = lws_cmdline_option(argc, argv, "--key-ops")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_KEY_OPS].sw)))
 		lws_jwk_strdup_meta(&jwk, JWK_META_KEY_OPS, p, (int)strlen(p));
 
-	if ((p = lws_cmdline_option(argc, argv, "--public")) &&
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_PUBLIC].sw)) &&
 	    kty != LWS_GENCRYPTO_KTY_OCT) {
 
 		int fd;
@@ -158,7 +196,7 @@ int main(int argc, const char **argv)
 			return 1;
 		}
 
-		if (lws_cmdline_option(argc, argv, "-c"))
+		if (lws_cmdline_option(argc, argv, switches[LWS_SW_C].sw))
 			format_c(fd, key);
 		else {
 			if (write(fd, key,
@@ -182,7 +220,7 @@ int main(int argc, const char **argv)
 		return 1;
 	}
 
-	if (lws_cmdline_option(argc, argv, "-c")) {
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_C].sw)) {
 		if (format_c(1, key) < 0)
 			return 1;
 	} else

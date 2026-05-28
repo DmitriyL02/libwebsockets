@@ -21,11 +21,93 @@
 #include "ssl_cert.h"
 #include "ssl_dbg.h"
 #include "ssl_port.h"
+#include "platform/ssl_pm.h"
+#include <string.h>
 
 char *
 lws_strncpy(char *dest, const char *src, size_t size);
 
 #define SSL_SEND_DATA_MAX_LENGTH 1460
+
+
+/* Parse a colon/comma/space separated list of IANA/mbedTLS ciphers
+ * into a malloc'ed int[] terminated with 0.
+ */
+static int *parse_cipher_list_to_ids(const char *str)
+{
+    int *result = NULL;
+    size_t tokens = 0, out = 0;
+    struct lws_tokenize ts;
+    lws_tokenize_elem e;
+    char tok[256];
+    int flags = LWS_TOKENIZE_F_MINUS_NONTERM |
+                LWS_TOKENIZE_F_COMMA_SEP_LIST |
+                LWS_TOKENIZE_F_NO_INTEGERS;
+
+    if (!str || !*str)
+        return NULL;
+
+    /* First pass: count tokens */
+    lws_tokenize_init(&ts, str, flags);
+    while ((e = lws_tokenize(&ts)) != LWS_TOKZE_ENDED) {
+        if (e == LWS_TOKZE_TOKEN)
+            tokens++;
+    }
+
+    if (!tokens)
+        return NULL;
+
+    result = ssl_mem_malloc((tokens + 1) * sizeof(int));
+    if (!result)
+        return NULL;
+
+    /* Second pass: parse and convert tokens */
+    lws_tokenize_init(&ts, str, flags);
+    while ((e = lws_tokenize(&ts)) != LWS_TOKZE_ENDED) {
+        int id = 0;
+
+        if (e != LWS_TOKZE_TOKEN)
+            continue;
+
+        /* Copy token to null-terminated buffer */
+        if (lws_tokenize_cstr(&ts, tok, sizeof(tok)))
+            continue;  /* token too long, skip it */
+
+        /* 1) try mbedTLS native name directly */
+        id = mbedtls_ssl_get_ciphersuite_id(tok);
+
+        /* 2) if that failed and it looks like IANA (TLS_...) convert '_' -> '-' */
+        if (id <= 0 && strncmp(tok, "TLS_", 4) == 0) {
+            char name[256];
+            size_t k;
+
+            strncpy(name, tok, sizeof(name) - 1);
+            name[sizeof(name) - 1] = '\0';
+
+            for (k = 0; name[k]; ++k) {
+                if (name[k] == '_')
+                    name[k] = '-';
+            }
+
+            id = mbedtls_ssl_get_ciphersuite_id(name);
+        }
+
+        if (id > 0)
+            result[out++] = id;
+        else
+            /* Optional: log unknown cipher */
+            lwsl_warn("%s: unknown TLS ciphersuite '%s' in list '%s'\n", __func__, tok, str);
+    }
+
+    if (!out) {
+        ssl_mem_free(result);
+        return NULL;
+    }
+
+    result[out] = 0;
+
+    return result;
+}
 
 /**
  * @brief create a new SSL session object
@@ -185,7 +267,7 @@ const char *mbedtls_client_preload_filepath;
 /**
  * @brief create a SSL context
  */
-SSL_CTX* SSL_CTX_new(const SSL_METHOD *method, void *rngctx)
+SSL_CTX* SSL_CTX_new(const SSL_METHOD *method)
 {
     SSL_CTX *ctx;
     CERT *cert;
@@ -205,7 +287,7 @@ SSL_CTX* SSL_CTX_new(const SSL_METHOD *method, void *rngctx)
         goto failed1;
     }
 
-    cert = ssl_cert_new(rngctx);
+    cert = ssl_cert_new();
     if (!cert) {
         SSL_DEBUG(SSL_LIB_ERROR_LEVEL, "ssl_cert_new() return NULL");
         goto failed2;
@@ -220,7 +302,6 @@ SSL_CTX* SSL_CTX_new(const SSL_METHOD *method, void *rngctx)
     ctx->method = method;
     ctx->client_CA = client_ca;
     ctx->cert = cert;
-    ctx->rngctx = rngctx;
 
     ctx->version = method->version;
 
@@ -231,9 +312,11 @@ SSL_CTX* SSL_CTX_new(const SSL_METHOD *method, void *rngctx)
 	*px = malloc(sizeof(**px));
 	mbedtls_x509_crt_init(*px);
 	n = mbedtls_x509_crt_parse_file(*px, mbedtls_client_preload_filepath);
-	if (n < 0)
+	if (n < 0) {
 		lwsl_err("%s: unable to load cert bundle 0x%x\n", __func__, -n);
-	else
+		mbedtls_x509_crt_free(*px);
+		free(*px);
+	} else
 		lwsl_info("%s: loaded cert bundle %d\n", __func__, n);
     }
 #endif
@@ -255,7 +338,23 @@ void SSL_CTX_free(SSL_CTX* ctx)
 {
     SSL_ASSERT3(ctx);
 
+    if (ctx->ciphersuites) {
+        ssl_mem_free(ctx->ciphersuites);
+        ctx->ciphersuites = NULL;
+    }
+
     ssl_cert_free(ctx->cert);
+
+#if defined(LWS_HAVE_mbedtls_x509_crt_parse_file)
+    if (mbedtls_client_preload_filepath) {
+        mbedtls_x509_crt **px = (mbedtls_x509_crt **)ctx->client_CA->x509_pm;
+
+        if (*px) {
+            mbedtls_x509_crt_free(*px);
+            free(*px);
+        }
+    }
+#endif
 
     X509_free(ctx->client_CA);
 
@@ -265,6 +364,21 @@ void SSL_CTX_free(SSL_CTX* ctx)
     }
 
     ssl_mem_free(ctx);
+}
+
+int SSL_CTX_set_cipher_list(SSL_CTX *ctx, const char *str)
+{
+    SSL_ASSERT1(ctx);
+
+    /* free previous list if any */
+    if (ctx->ciphersuites) {
+        ssl_mem_free(ctx->ciphersuites);
+        ctx->ciphersuites = NULL;
+    }
+
+    ctx->ciphersuites = parse_cipher_list_to_ids(str);
+
+    return !!ctx->ciphersuites;
 }
 
 /**
@@ -317,7 +431,7 @@ SSL *SSL_new(SSL_CTX *ctx)
         goto failed2;
     }
 
-    ssl->cert = __ssl_cert_new(ctx->cert, ctx->rngctx);
+    ssl->cert = __ssl_cert_new(ctx->cert);
     if (!ssl->cert) {
         SSL_DEBUG(SSL_LIB_ERROR_LEVEL, "__ssl_cert_new() return NULL");
         goto failed3;
@@ -1243,4 +1357,60 @@ void SSL_set_alpn_select_cb(SSL *ssl, void *arg)
 	_openssl_alpn_to_mbedtls(ac, (char ***)&ssl->alpn_protos);
 
 	_ssl_set_alpn_list(ssl);
+}
+
+int SSL_CTX_load_verify_file(SSL_CTX *ctx, const char *CAfile)
+{
+	X509 *x;
+	int ret;
+
+	SSL_ASSERT1(ctx);
+	SSL_ASSERT1(CAfile);
+
+	x = X509_new();
+	ret = X509_METHOD_CALL(load_file, x, CAfile);
+	if (ret) {
+		X509_free(x);
+		return 0;
+	}
+
+	SSL_CTX_add_client_CA(ctx, x);
+	return 1;
+}
+
+int SSL_CTX_load_verify_dir(SSL_CTX *ctx, const char *CApath)
+{
+	X509 *x;
+	int ret;
+
+	SSL_ASSERT1(ctx);
+	SSL_ASSERT1(CApath);
+
+	x = X509_new();
+	ret = X509_METHOD_CALL(load_path, x, CApath);
+	if (ret) {
+		X509_free(x);
+		return 0;
+	}
+
+	SSL_CTX_add_client_CA(ctx, x);
+	return 1;
+}
+
+int SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile,
+                                  const char *CApath)
+{
+	if (CAfile == NULL && CApath == NULL) {
+		return 0;
+	}
+
+	if (CAfile != NULL && !SSL_CTX_load_verify_file(ctx, CAfile)) {
+		return 0;
+	}
+
+	if (CApath != NULL && !SSL_CTX_load_verify_dir(ctx, CApath)) {
+		return 0;
+	}
+
+	return 1;
 }

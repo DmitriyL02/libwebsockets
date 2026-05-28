@@ -1,5 +1,5 @@
 project(lws-minimal-secure-streams-blob C)
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.10)
 find_package(libwebsockets CONFIG REQUIRED)
 list(APPEND CMAKE_MODULE_PATH ${LWS_CMAKE_DIR})
 include(CheckCSourceCompiles)
@@ -15,6 +15,7 @@ require_lws_config(LWS_WITH_SECURE_STREAMS_STATIC_POLICY_ONLY 0 requirements)
 require_lws_config(LWS_WITH_SYS_STATE 1 requirements)
 require_lws_config(LWS_WITH_GENCRYPTO 1 requirements)
 require_lws_config(USE_WOLFSSL 0 requirements)
+require_lws_config(LWS_WITH_SSL 1 requirements)
 
 if (requirements)
 	add_executable(${SAMP} minimal-secure-streams.c)
@@ -70,7 +71,12 @@ if (requirements)
 				set(CTEST_SOCKET_PATH "@ctest-ssblobproxy-$ENV{SAI_PROJECT}-$ENV{SAI_OVN}")
 			else()
 				# filesystem socket for others
-				set(CTEST_SOCKET_PATH "/tmp/ctest-ssblobproxy-$ENV{SAI_PROJECT}-$ENV{SAI_OVN}")
+                                if (DEFINED ENV{SAI_OVN})
+                                        string(SUBSTRING "$ENV{SAI_OVN}" 32 16 SHORT_HASH)
+                                else()
+                                        set(SHORT_HASH "0")
+                                endif()
+				set(CTEST_SOCKET_PATH "/tmp/ctest-ssblobproxy-$ENV{SAI_PROJECT}-${SHORT_HASH}")
 			endif()
 			add_test(NAME st_ssblobproxy COMMAND
 				${CMAKE_SOURCE_DIR}/scripts/ctest-background.sh

@@ -25,6 +25,7 @@
  *  same whether you are using openssl or mbedtls hash functions underneath.
  */
 #include <private-lib-core.h>
+#include "private-lib-tls-openssl.h"
 #include <openssl/obj_mac.h>
 #include <openssl/opensslv.h>
 /*
@@ -98,7 +99,7 @@ lws_genhash_destroy(struct lws_genhash_ctx *ctx, void *result)
 	return ret;
 }
 
-#if defined(LWS_HAVE_EVP_PKEY_new_raw_private_key)
+#if defined(LWS_HAVE_EVP_PKEY_new_raw_private_key) && !defined(LWS_WITH_BORINGSSL) && !defined(LWS_WITH_AWSLC)
 
 int
 lws_genhmac_init(struct lws_genhmac_ctx *ctx, enum lws_genhmac_types type,
@@ -112,6 +113,9 @@ lws_genhmac_init(struct lws_genhmac_ctx *ctx, enum lws_genhmac_types type,
 	ctx->type = (uint8_t)type;
 
 	switch (type) {
+	case LWS_GENHMAC_TYPE_SHA1:
+		ctx->evp_type = EVP_sha1();
+		break;
 	case LWS_GENHMAC_TYPE_SHA256:
 		ctx->evp_type = EVP_sha256();
 		break;
@@ -147,7 +151,11 @@ int
 lws_genhmac_update(struct lws_genhmac_ctx *ctx, const void *in, size_t len)
 {
 
+#if defined(USE_WOLFSSL)
+	if (EVP_DigestSignUpdate(ctx->ctx, in, (unsigned int)len) != 1)
+#else
 	if (EVP_DigestSignUpdate(ctx->ctx, in, len) != 1)
+#endif
 		return -1;
 
 	return 0;
@@ -187,6 +195,9 @@ lws_genhmac_init(struct lws_genhmac_ctx *ctx, enum lws_genhmac_types type,
 	ctx->type = (uint8_t)type;
 
 	switch (type) {
+	case LWS_GENHMAC_TYPE_SHA1:
+		ctx->evp_type = EVP_sha1();
+		break;
 	case LWS_GENHMAC_TYPE_SHA256:
 		ctx->evp_type = EVP_sha256();
 		break;
@@ -202,9 +213,10 @@ lws_genhmac_init(struct lws_genhmac_ctx *ctx, enum lws_genhmac_types type,
 	}
 
 #if defined(LWS_HAVE_HMAC_CTX_new)
-        if (HMAC_Init_ex(ctx->ctx, key, (int)key_len, ctx->evp_type, NULL) != 1)
+        if (HMAC_Init_ex(ctx->ctx, key, 
+				SSL_SIZE_T_CAST(key_len), ctx->evp_type, NULL) != 1)
 #else
-        if (HMAC_Init_ex(&ctx->ctx, key, (int)key_len, ctx->evp_type, NULL) != 1)
+        if (HMAC_Init_ex(&ctx->ctx, key, SSL_SIZE_T_CAST(key_len), ctx->evp_type, NULL) != 1)
 #endif
         	goto bail;
 
@@ -225,7 +237,7 @@ lws_genhmac_update(struct lws_genhmac_ctx *ctx, const void *in, size_t len)
 #if defined(LIBRESSL_VERSION_NUMBER)
 	if (HMAC_Update(ctx->ctx, in, len) != 1)
 #else
-	if (HMAC_Update(ctx->ctx, in, (int)len) != 1)
+	if (HMAC_Update(ctx->ctx, in, SSL_SIZE_T_CAST(len)) != 1)
 #endif
 #else /* HMAC_CTX_new */
 	if (HMAC_Update(&ctx->ctx, in, len) != 1)

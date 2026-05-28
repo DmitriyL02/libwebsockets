@@ -30,14 +30,7 @@ static const unsigned char lextable_h1[] = {
 
 #define FAIL_CHAR 0x08
 
-#if defined(LWS_WITH_CUSTOM_HEADERS)
 
-#define UHO_NLEN	0
-#define UHO_VLEN	2
-#define UHO_LL		4
-#define UHO_NAME	8
-
-#endif
 
 static struct allocated_headers *
 _lws_create_ah(struct lws_context_per_thread *pt, ah_data_idx_t data_size)
@@ -520,7 +513,7 @@ int lws_hdr_copy_fragment(struct lws *wsi, char *dst, int len,
 	}
 
 	if (wsi->http.ah->frags[f].len >= len)
-		return -1;
+		return -2;
 
 	memcpy(dst, wsi->http.ah->data + wsi->http.ah->frags[f].offset,
 	       wsi->http.ah->frags[f].len);
@@ -550,14 +543,14 @@ int lws_hdr_copy(struct lws *wsi, char *dst, int len,
 	do {
 		comma = (wsi->http.ah->frags[n].nfrag) ? 1 : 0;
 
-		if (h == WSI_TOKEN_HTTP_URI_ARGS)
+/*		if (h == WSI_TOKEN_HTTP_URI_ARGS)
 			lwsl_notice("%s: WSI_TOKEN_HTTP_URI_ARGS '%.*s'\n",
 				    __func__, (int)wsi->http.ah->frags[n].len,
 				    &wsi->http.ah->data[
 				                wsi->http.ah->frags[n].offset]);
-
+*/
 		if (wsi->http.ah->frags[n].len + comma >= len) {
-			lwsl_notice("blowout len\n");
+			lwsl_wsi_notice(wsi, "blowout len");
 			return -1;
 		}
 		strncpy(dst, &wsi->http.ah->data[wsi->http.ah->frags[n].offset],
@@ -587,8 +580,8 @@ int lws_hdr_copy(struct lws *wsi, char *dst, int len,
 	} while (n);
 	*dst = '\0';
 
-	if (h == WSI_TOKEN_HTTP_URI_ARGS)
-		lwsl_err("%s: WSI_TOKEN_HTTP_URI_ARGS toklen %d\n", __func__, (int)toklen);
+	// if (h == WSI_TOKEN_HTTP_URI_ARGS)
+	//	lwsl_err("%s: WSI_TOKEN_HTTP_URI_ARGS toklen %d\n", __func__, (int)toklen);
 
 	return toklen;
 }
@@ -703,7 +696,7 @@ lws_pos_in_bounds(struct lws *wsi)
 		return 0;
 
 	if ((int)wsi->http.ah->pos >= (int)wsi->a.context->max_http_header_data - 1) {
-		lwsl_err("Ran out of header data space\n");
+		lwsl_wsi_err(wsi, "Ran out of header data space");
 		return 1;
 	}
 
@@ -1532,82 +1525,87 @@ forbid:
 	return LPR_FORBIDDEN;
 }
 
+static const char * const cookie_prefixes[] = { "", "__Host-", "__Secure-" };
+
 int
 lws_http_cookie_get(struct lws *wsi, const char *name, char *buf,
 		    size_t *max_len)
 {
-	size_t max = *max_len, bl = strlen(name);
+	size_t max = *max_len, bl;
 	char *p, *bo = buf;
-	int n;
+	int n, m;
 
-	n = lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_COOKIE);
-	if ((unsigned int)n < bl + 1)
-		return 1;
+	for (m = 0; m < (int)LWS_ARRAY_SIZE(cookie_prefixes); m++) {
+		char nbuf[128];
+		const char *use_name = name;
 
-	/*
-	 * This can come to us two ways, in ah fragments (h2) or as a single
-	 * semicolon-delimited string (h1)
-	 */
+		if (m) {
+			lws_snprintf(nbuf, sizeof(nbuf), "%s%s",
+				     cookie_prefixes[m], name);
+			use_name = nbuf;
+		}
+
+		bl = strlen(use_name);
+		n = lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_COOKIE);
+		if ((unsigned int)n < bl + 1)
+			continue;
 
 #if defined(LWS_ROLE_H2)
-	if (lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_COLON_METHOD)) {
+		if (lws_hdr_total_length(wsi, WSI_TOKEN_HTTP_COLON_METHOD)) {
+			int f = wsi->http.ah->frag_index[WSI_TOKEN_HTTP_COOKIE];
+			size_t fl;
 
-		/*
-		 * The h2 way...
-		 */
+			while (f) {
+				p = wsi->http.ah->data + wsi->http.ah->frags[f].offset;
+				fl = (size_t)wsi->http.ah->frags[f].len;
+				char *pe = p + fl;
+				char *vp = p;
 
-		int f = wsi->http.ah->frag_index[WSI_TOKEN_HTTP_COOKIE];
-		size_t fl;
+				while (vp < pe) {
+					if ((size_t)(pe - vp) > bl && !memcmp(vp, use_name, bl) && vp[bl] == '=') {
+						if (vp == p || vp[-1] == ' ' || vp[-1] == ';') {
+							vp += bl + 1;
+							while (vp < pe && *vp != ';' && max > 1) {
+								*buf++ = *vp++;
+								max--;
+							}
+							*buf = '\0';
+							*max_len = lws_ptr_diff_size_t(buf, bo);
 
-		while (f) {
-			p = wsi->http.ah->data + wsi->http.ah->frags[f].offset;
-			fl = (size_t)wsi->http.ah->frags[f].len;
-			if (fl >= bl + 1 &&
-			    p[bl] == '=' &&
-			    !memcmp(p, name, bl)) {
-				fl -= bl + 1;
-				if (max - 1 < fl)
-					fl = max - 1;
-				if (fl)
-					memcpy(buf, p + bl + 1, fl);
-				*max_len = fl;
-				buf[fl] = '\0';
-
-				return 0;
+							return 0;
+						}
+					}
+					vp++;
+				}
+				f = wsi->http.ah->frags[f].nfrag;
 			}
-			f = wsi->http.ah->frags[f].nfrag;
-		}
-
-		return -1;
-	}
+		} else
 #endif
+		{
+			p = lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COOKIE);
+			if (p) {
+				char *pe = p + n;
 
-	/*
-	 * The h1 way...
-	 */
+				while (p < pe) {
+					if (!memcmp(p, use_name, bl) && p[bl] == '=') {
+						/* it's a match... is it at the start or after a space / ;? */
+						if (p == lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COOKIE) ||
+						    p[-1] == ' ' || p[-1] == ';') {
+							p += bl + 1;
+							while (p < pe && *p != ';' && max > 1) {
+								*buf++ = *p++;
+								max--;
+							}
+							*buf = '\0';
+							*max_len = lws_ptr_diff_size_t(buf, bo);
 
-	p = lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COOKIE);
-	if (!p)
-		return 1;
-
-	p += bl;
-	n -= (int)bl;
-	while (n-- > 0) {
-		if (*p == '=' && !memcmp(p - bl, name, (unsigned int)bl)) {
-			p++;
-			while (*p != ';' && n-- && max) {
-				*buf++ = *p++;
-				max--;
+							return 0;
+						}
+					}
+					p++;
+				}
 			}
-			if (!max)
-				return 2;
-
-			*buf = '\0';
-			*max_len = lws_ptr_diff_size_t(buf, bo);
-
-			return 0;
 		}
-		p++;
 	}
 
 	return 1;
@@ -1665,7 +1663,7 @@ lws_jwt_get_http_cookie_validate_jwt(struct lws *wsi,
 		i->extra_json = cp;
 
 	if (!cp)
-		lwsl_notice("%s: no ext JWT payload\n", __func__);
+		lwsl_info("%s: no ext JWT payload\n", __func__);
 
 	return 0;
 }
@@ -1710,7 +1708,7 @@ lws_jwt_sign_token_set_http_cookie(struct lws *wsi,
 	n = lws_snprintf(temp, sizeof(temp), "__Host-%s=%s;"
 			 "HttpOnly;"
 			 "Secure;"
-			 "SameSite=strict;"
+			 "SameSite=None;"
 			 "Path=/;"
 			 "Max-Age=%lu",
 			 i->cookie_name, plain, i->expiry_unix_time);
@@ -1724,3 +1722,32 @@ lws_jwt_sign_token_set_http_cookie(struct lws *wsi,
 	return 0;
 }
 #endif
+
+int
+lws_http_remove_urlarg(struct lws *wsi, const char *name)
+{
+	int fi, pf = 0, sl = (int)strlen(name);
+	struct allocated_headers *ah = wsi->http.ah;
+
+	if (!ah)
+		return 1;
+
+	fi = ah->frag_index[WSI_TOKEN_HTTP_URI_ARGS];
+
+	while (fi) {
+		struct lws_fragments *f = &ah->frags[fi];
+		if (f->len >= sl && !strncmp(&ah->data[f->offset], name, (size_t)sl)) {
+			/* matches... remove this fragment from the chain */
+			if (pf)
+				ah->frags[pf].nfrag = f->nfrag;
+			else
+				ah->frag_index[WSI_TOKEN_HTTP_URI_ARGS] = f->nfrag;
+
+			return 0;
+		}
+		pf = fi;
+		fi = f->nfrag;
+	}
+
+	return 1;
+}

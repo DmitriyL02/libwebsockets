@@ -41,6 +41,23 @@ extern "C" {
 #if defined(LWS_HAVE_SYS_TYPES_H) && !defined(LWS_PLAT_BAREMETAL)
 #include <sys/types.h>
 #endif
+#if defined(LWS_HAVE_NET_ETHERNET_H)
+#include <net/ethernet.h>
+#endif
+/* NetBSD */
+#if defined(LWS_HAVE_NET_IF_ETHER_H)
+#include <net/if_ether.h>
+#endif
+#if defined(_WIN32) && !defined(ETHER_ADDR_LEN)
+#define ETHER_ADDR_LEN 6
+#endif
+#if defined (__sun)
+	#include <sys/ethernet.h>
+	#if !defined(ETHER_ADDR_LEN) && defined(ETHERADDRL)
+		#define ETHER_ADDR_LEN ETHERADDRL
+	#endif
+#endif
+#define LWS_ETHER_ADDR_LEN ETHER_ADDR_LEN
 
 #include <stddef.h>
 #include <string.h>
@@ -95,8 +112,8 @@ typedef unsigned long long lws_intptr_t;
 #define O_RDONLY	_O_RDONLY
 #endif
 
-typedef int uid_t;
-typedef int gid_t;
+typedef unsigned int uid_t;
+typedef unsigned int gid_t;
 typedef unsigned short sa_family_t;
 #if !defined(LWS_HAVE_SUSECONDS_T)
 typedef unsigned int useconds_t;
@@ -108,6 +125,19 @@ typedef int suseconds_t;
 #define LWS_WARN_UNUSED_RESULT
 #define LWS_WARN_DEPRECATED
 #define LWS_FORMAT(string_index)
+
+#if defined(LWS_HAVE_PTHREAD_H)
+#define lws_mutex_t		pthread_mutex_t
+#define lws_mutex_init(x)	pthread_mutex_init(&(x), NULL)
+#define lws_mutex_destroy(x)	pthread_mutex_destroy(&(x))
+#define lws_mutex_lock(x)	pthread_mutex_lock(&(x))
+#define lws_mutex_unlock(x)	pthread_mutex_unlock(&(x))
+
+#define lws_tid_t		pthread_t
+#define lws_thread_is(x)	pthread_equal(x, pthread_self())
+#define lws_thread_id()		pthread_self()
+
+#endif
 
 #if !defined(LWS_EXTERN) && defined(LWS_BUILDING_SHARED)
 #ifdef LWS_DLL
@@ -135,20 +165,68 @@ typedef int suseconds_t;
 #define LWS_O_CREAT _O_CREAT
 #define LWS_O_TRUNC _O_TRUNC
 
-#ifndef __func__
+#if (__STDC_VERSION__ < 199901L) && !defined(__func__)
 #define __func__ __FUNCTION__
 #endif
 
+#define LWS_POSIX_LENGTH_CAST(x) (unsigned int)(x)
+
 #else /* NOT WIN32 */
 #include <unistd.h>
+
+#if defined (LWS_PLAT_FREERTOS)
+#if defined(LWS_AMAZON_RTOS)
+#include <FreeRTOS.h>
+#include <semphr.h>
+#include <task.h>
+#else
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
+#endif
+
+typedef SemaphoreHandle_t lws_mutex_t;
+#define lws_mutex_init(x)	x = xSemaphoreCreateMutex()
+#define lws_mutex_destroy(x)	vSemaphoreDelete(x)
+#define lws_mutex_lock(x)	(!xSemaphoreTake(x, portMAX_DELAY)) /*0 = OK */
+#define lws_mutex_unlock(x)	xSemaphoreGive(x)
+
+#define lws_tid_t		TaskHandle_t
+#define lws_thread_is(x)	(x == xTaskGetCurrentTaskHandle())
+#define lws_thread_id()		xTaskGetCurrentTaskHandle()
+#else
+
+#if defined(LWS_HAVE_PTHREAD_H)
+#include <pthread.h>
+#include <sys/types.h>
+
+typedef pthread_mutex_t lws_mutex_t;
+#define lws_mutex_init(x)	pthread_mutex_init(&(x), NULL)
+#define lws_mutex_destroy(x)	pthread_mutex_destroy(&(x))
+#define lws_mutex_lock(x)	pthread_mutex_lock(&(x))
+#define lws_mutex_unlock(x)	pthread_mutex_unlock(&(x))
+
+#define lws_tid_t		pthread_t
+#define lws_thread_is(x)	pthread_equal(x, pthread_self())
+#define lws_thread_id()		pthread_self()
+#endif
+#endif /* freertos */
+
+#define LWS_POSIX_LENGTH_CAST(x) (x)
 
 #if defined(LWS_HAVE_SYS_CAPABILITY_H) && defined(LWS_HAVE_LIBCAP)
 #include <sys/capability.h>
 #endif
 
-#if defined(__NetBSD__) || defined(__FreeBSD__) || defined(__QNX__) || defined(__OpenBSD__)
+#if defined(__NetBSD__) || defined(__FreeBSD__) || defined(__QNX__) || defined(__OpenBSD__) || defined(__NuttX__)
 #include <sys/socket.h>
 #include <netinet/in.h>
+#endif
+
+/* Find ETHER_ADDR_LEN on OpenBSD */
+#if defined(__OpenBSD__)
+#include <net/if_arp.h>
+#include <netinet/if_ether.h>
 #endif
 
 #define LWS_INLINE inline
@@ -219,11 +297,24 @@ typedef int suseconds_t;
 #endif
 #endif
 
-
 #if defined(__ANDROID__)
 #include <netinet/in.h>
 #include <unistd.h>
 #endif
+#endif
+
+#if defined(_WIN32)
+#if defined(LWS_DLL)
+#if defined(LWS_INTERNAL)
+#define LWS_EXTERN_FOR_DATA extern __declspec(dllexport)
+#else
+#define LWS_EXTERN_FOR_DATA extern __declspec(dllimport)
+#endif
+#else
+#define LWS_EXTERN_FOR_DATA extern
+#endif
+#else
+#define LWS_EXTERN_FOR_DATA extern
 #endif
 
 #ifdef _WIN32
@@ -248,6 +339,35 @@ typedef int suseconds_t;
 #endif
 
 #if defined(LWS_WITH_TLS)
+
+#if defined(LWS_WITH_SCHANNEL)
+typedef struct lws_tls_schannel_conn SSL;
+typedef struct lws_tls_schannel_ctx SSL_CTX;
+typedef struct lws_tls_schannel_bio BIO;
+typedef struct lws_tls_schannel_x509 X509;
+
+/*
+ * These are needed for lws-gen* and other headers that assume OpenSSL types
+ * when LWS_WITH_TLS is defined. SChannel implementation of these APIs
+ * will need to map these to Windows CryptoAPI/CNG types internally,
+ * or we can just treat them as opaque handles here.
+ */
+typedef void EVP_PKEY_CTX;
+typedef void EVP_MD;
+typedef void EVP_MD_CTX;
+typedef void HMAC_CTX;
+typedef void EVP_CIPHER_CTX;
+typedef void EVP_CIPHER;
+typedef void ENGINE;
+typedef void RSA;
+typedef void BIGNUM;
+typedef void EC_KEY;
+typedef void EC_POINT;
+typedef void EC_GROUP;
+typedef void X509_STORE_CTX;
+typedef void X509_VERIFY_PARAM;
+
+#else
 
 #ifdef USE_WOLFSSL
 #ifdef USE_OLD_CYASSL
@@ -288,6 +408,7 @@ typedef int suseconds_t;
 #define MBEDTLS_CONFIG_FILE <mbedtls/esp_config.h>
 #endif
 #endif
+
 #if defined(LWS_WITH_TLS)
 #include <mbedtls/ssl.h>
 #include <mbedtls/entropy.h>
@@ -305,6 +426,17 @@ typedef int suseconds_t;
 #endif
 
 #endif
+#elif defined(LWS_WITH_GNUTLS)
+#include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
+#include <gnutls/abstract.h>
+#include <gnutls/x509.h>
+#include <netinet/in.h>
+#include <unistd.h>
+typedef struct gnutls_session_int SSL;
+typedef struct lws_tls_gnutls_ctx SSL_CTX;
+typedef void BIO;
+typedef struct gnutls_x509_crt_int X509;
 #else
 #include <openssl/ssl.h>
 #if !defined(LWS_WITH_MBEDTLS)
@@ -312,6 +444,7 @@ typedef int suseconds_t;
 #endif
 #endif
 #endif /* not USE_WOLFSSL */
+#endif /* not SCHANNEL */
 #endif
 
 /*
@@ -677,6 +810,10 @@ lws_fx_string(const lws_fx_t *a, char *buf, size_t size);
 #endif
 #include <libwebsockets/lws-state.h>
 #include <libwebsockets/lws-retry.h>
+#include <libwebsockets/lws-adapt.h>
+#if defined(LWS_WITH_TRANSPORT_SEQUENCER)
+#include <libwebsockets/lws-transport-sequencer.h>
+#endif
 #if defined(LWS_WITH_NETWORK)
 #include <libwebsockets/lws-adopt.h>
 #include <libwebsockets/lws-network-helper.h>
@@ -685,13 +822,21 @@ lws_fx_string(const lws_fx_t *a, char *buf, size_t size);
 
 #include <libwebsockets/lws-ota.h>
 #include <libwebsockets/lws-system.h>
+#include <libwebsockets/lws-whois.h>
+#include <libwebsockets/lws-callbacks.h>
+
 #if defined(LWS_WITH_NETWORK)
 #include <libwebsockets/lws-ws-close.h>
-#include <libwebsockets/lws-callbacks.h>
 #include <libwebsockets/lws-ws-state.h>
 #include <libwebsockets/lws-ws-ext.h>
-#include <libwebsockets/lws-protocols-plugins.h>
+#include <libwebsockets/lws-latency.h>
 #endif
+
+#include <libwebsockets/lws-protocols-plugins.h>
+#if defined(LWS_WITH_JOSE)
+#include <libwebsockets/lws-interceptor.h>
+#endif
+
 #include <libwebsockets/lws-context-vhost.h>
 
 #if defined(LWS_WITH_NETWORK)
@@ -704,7 +849,11 @@ lws_fx_string(const lws_fx_t *a, char *buf, size_t size);
 #endif
 #include <libwebsockets/lws-client.h>
 #include <libwebsockets/lws-http.h>
+#if defined(LWS_ROLE_H3)
+#include <libwebsockets/lws-qpack.h>
+#endif
 #include <libwebsockets/lws-spa.h>
+#include <libwebsockets/lws-async-ipc.h>
 #endif
 #include <libwebsockets/lws-purify.h>
 #include <libwebsockets/lws-misc.h>
@@ -715,6 +864,11 @@ lws_fx_string(const lws_fx_t *a, char *buf, size_t size);
 #include <libwebsockets/lws-writeable.h>
 #endif
 #include <libwebsockets/lws-ring.h>
+#if defined(LWS_WITH_MNEMONIC)
+#include <libwebsockets/lws-mnemonic.h>
+#endif
+#include <libwebsockets/lws-gendtls.h>
+#include <libwebsockets/lws-stun.h>
 #include <libwebsockets/lws-sha1-base64.h>
 #include <libwebsockets/lws-x509.h>
 #if defined(LWS_WITH_NETWORK)
@@ -740,12 +894,17 @@ lws_fx_string(const lws_fx_t *a, char *buf, size_t size);
 #include <libwebsockets/lws-secure-streams-client.h>
 #include <libwebsockets/lws-secure-streams-transport-proxy.h>
 #include <libwebsockets/lws-jrpc.h>
+#include <libwebsockets/lws-stub.h>
 
 #include <libwebsockets/lws-async-dns.h>
+#if defined(LWS_WITH_AUTHORITATIVE_DNS)
+#include <libwebsockets/lws-auth-dns.h>
+#endif
 
 #if defined(LWS_WITH_TLS)
 
 #include <libwebsockets/lws-tls-sessions.h>
+#include <libwebsockets/lws-quic.h>
 
 #if defined(LWS_WITH_MBEDTLS)
 #include <mbedtls/md5.h>
@@ -753,16 +912,21 @@ lws_fx_string(const lws_fx_t *a, char *buf, size_t size);
 #include <mbedtls/sha256.h>
 #include <mbedtls/sha512.h>
 #endif
+#if defined(LWS_WITH_BEARSSL)
+#include <bearssl.h>
+#endif
 
 #include <libwebsockets/lws-genhash.h>
 #include <libwebsockets/lws-genrsa.h>
 #include <libwebsockets/lws-genaes.h>
+#include <libwebsockets/lws-genchacha.h>
 #include <libwebsockets/lws-genec.h>
 
 #include <libwebsockets/lws-jwk.h>
 #include <libwebsockets/lws-jose.h>
 #include <libwebsockets/lws-jws.h>
 #include <libwebsockets/lws-jwe.h>
+#include <libwebsockets/lws-jwt-auth.h>
 
 #endif
 
@@ -786,15 +950,39 @@ lws_fx_string(const lws_fx_t *a, char *buf, size_t size);
 #include <libwebsockets/lws-dlo.h>
 #include <libwebsockets/lws-ssd1306-i2c.h>
 #include <libwebsockets/lws-ili9341-spi.h>
+#include <libwebsockets/lws-gc9a01a-spi.h>
 #include <libwebsockets/lws-spd1656-spi.h>
+#include <libwebsockets/lws-ssd1675b-spi.h>
 #include <libwebsockets/lws-uc8176-spi.h>
 #include <libwebsockets/lws-ssd1675b-spi.h>
 #include <libwebsockets/lws-settings.h>
+#if defined(LWS_WITH_DLTS)
+#include <libwebsockets/lws-gendtls.h>
+#endif
 #if defined(LWS_WITH_NETWORK)
 #include <libwebsockets/lws-netdev.h>
+#include <libwebsockets/lws-txpacer.h>
+#include "libwebsockets/lws-dht.h"
+#include "libwebsockets/lws-dht-dnssec.h"
+#if defined(LWS_WITH_TRANSCODE)
+#include <libwebsockets/lws-transcode.h>
+#endif
+#if defined(LWS_WITH_V4L2)
+#include <libwebsockets/lws-v4l2.h>
+#endif
+#if defined(LWS_WITH_ALSA)
+#include <libwebsockets/lws-alsa.h>
+#include <libwebsockets/lws-audio-features.h>
+#endif
 #endif
 
 #include <libwebsockets/lws-html.h>
+#include <libwebsockets/qrcodegen.h>
+#include <libwebsockets/lws-smtp-client.h>
+
+#if defined(LWS_WITH_DIR)
+#include <libwebsockets/lws-dir-notify.h>
+#endif
 
 #ifdef __cplusplus
 }

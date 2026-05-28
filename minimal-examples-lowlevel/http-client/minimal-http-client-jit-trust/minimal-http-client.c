@@ -13,6 +13,17 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_EXPECTED_EXIT,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_EXPECTED_EXIT]	= { "--expected-exit", "Enable --expected-exit feature" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 
@@ -396,6 +407,7 @@ jit_trust_query(struct lws_context *cx, const uint8_t *skid,
 
 	/* Once we have a result, pass it to the completion helper */
 
+	/* coverity[tainted_data] */ 
 	return lws_tls_jit_trust_got_cert_cb(cx, got_opaque, skid, skid_len,
 					     der, der_len);
 }
@@ -454,7 +466,7 @@ int main(int argc, const char **argv)
 	lws_context_destroy(context);
 
 bail:
-	if ((p = lws_cmdline_option(argc, argv, "--expected-exit")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_EXPECTED_EXIT].sw)))
 		expected = atoi(p);
 
 	if (bad == expected) {

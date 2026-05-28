@@ -1,7 +1,7 @@
 /*
  * lws-api-test-gencrypto - lws-genaes
  *
- * Written in 2010-2018 by Andy Green <andy@warmcat.com>
+ * Written in 2010-2025 by Andy Green <andy@warmcat.com>
  *
  * This file is made available under the Creative Commons CC0 1.0
  * Universal Public Domain Dedication.
@@ -10,7 +10,8 @@
 #include <libwebsockets.h>
 
 
-#if (defined(LWS_WITH_MBEDTLS) && (!defined(MBEDTLS_CONFIG_H) || defined(MBEDTLS_CIPHER_MODE_CBC))) || \
+#if defined(LWS_WITH_SCHANNEL) || \
+    (defined(LWS_WITH_MBEDTLS) && (!defined(MBEDTLS_CONFIG_H) || defined(MBEDTLS_CIPHER_MODE_CBC))) || \
     (!defined(LWS_WITH_MBEDTLS) && defined(LWS_HAVE_EVP_aes_128_cbc))
 
 static const uint8_t
@@ -142,7 +143,12 @@ test_genaes_cfb128(void)
 	e.buf = (uint8_t *)cfb128_key;
 	e.len = sizeof(cfb128_key);
 
-	if (lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_CFB128, &e, 0, NULL)) {
+	int n = lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_CFB128, &e, 0, NULL);
+	if (n) {
+		if (n == -2) {
+			lwsl_notice("%s: lws_genaes_create unsupported\n", __func__);
+			return 0;
+		}
 		lwsl_err("%s: lws_genaes_create failed\n", __func__);
 		return 1;
 	}
@@ -197,7 +203,8 @@ bail:
 }
 #endif
 
-#if (defined(LWS_WITH_MBEDTLS) && (!defined(MBEDTLS_CONFIG_H) || defined(MBEDTLS_CIPHER_MODE_CFB))) || \
+#if defined(LWS_WITH_SCHANNEL) || \
+    (defined(LWS_WITH_MBEDTLS) && (!defined(MBEDTLS_CONFIG_H) || defined(MBEDTLS_CIPHER_MODE_CFB))) || \
     (!defined(LWS_WITH_MBEDTLS) && defined(LWS_HAVE_EVP_aes_128_cfb8))
 
 static const uint8_t
@@ -318,13 +325,20 @@ test_genaes_ctr(void)
 	uint8_t res[32], res1[32];
 	size_t nc_off = 0;
 
+	int n;
+
 	e.buf = (uint8_t *)ctr_key;
 	e.len = sizeof(ctr_key);
 
 	memset(sb, 0, sizeof(nonce_counter));
 	memcpy(nonce_counter, ctr_iv, sizeof(ctr_iv));
 
-	if (lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_CTR, &e, 0, NULL)) {
+	n = lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_CTR, &e, 0, NULL);
+	if (n) {
+		if (n == -2) {
+			lwsl_notice("%s: lws_genaes_create unsupported\n", __func__);
+			return 0;
+		}
 		lwsl_err("%s: lws_genaes_create failed\n", __func__);
 		return 1;
 	}
@@ -381,7 +395,8 @@ bail:
 }
 #endif
 
-#if (defined(LWS_WITH_MBEDTLS)) || \
+#if defined(LWS_WITH_SCHANNEL) || \
+    (defined(LWS_WITH_MBEDTLS)) || \
     (!defined(LWS_WITH_MBEDTLS) && defined(LWS_HAVE_EVP_aes_128_ecb))
 static const uint8_t
 /*
@@ -414,10 +429,17 @@ test_genaes_ecb(void)
 	 * As part of a jwk, these are allocated.  But here we just use one as
 	 * a wrapper on a static binary key.
 	 */
+	int n;
+
 	e.buf = (uint8_t *)ecb_key;
 	e.len = sizeof(ecb_key);
 
-	if (lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_ECB, &e, 0, NULL)) {
+	n = lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_ECB, &e, 0, NULL);
+	if (n) {
+		if (n == -2) {
+			lwsl_notice("%s: lws_genaes_create unsupported\n", __func__);
+			return 0;
+		}
 		lwsl_err("%s: lws_genaes_create failed\n", __func__);
 		return 1;
 	}
@@ -506,10 +528,17 @@ test_genaes_ofb(void)
 	uint8_t res[32], res1[32];
 	size_t iv_off = 0;
 
+	int n;
+
 	e.buf = (uint8_t *)ofb_key;
 	e.len = sizeof(ofb_key);
 
-	if (lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_OFB, &e, 0, NULL)) {
+	n = lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_OFB, &e, 0, NULL);
+	if (n) {
+		if (n == -2) {
+			lwsl_notice("%s: lws_genaes_create unsupported\n", __func__);
+			return 0;
+		}
 		lwsl_err("%s: lws_genaes_create failed\n", __func__);
 		return 1;
 	}
@@ -601,10 +630,17 @@ test_genaes_xts(void)
 
 	memset(data_unit, 0, sizeof(data_unit));
 
+	int n;
+
 	e.buf = (uint8_t *)xts_key;
 	e.len = sizeof(xts_key);
 
-	if (lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_XTS, &e, 0, NULL)) {
+	n = lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_XTS, &e, 0, NULL);
+	if (n) {
+		if (n == -2) {
+			lwsl_notice("%s: lws_genaes_create unsupported\n", __func__);
+			return 0;
+		}
 		lwsl_err("%s: lws_genaes_create failed\n", __func__);
 		return 1;
 	}
@@ -655,6 +691,7 @@ bail:
 }
 #endif
 
+//#if !defined(LWS_WITH_SCHANNEL)
 static const uint8_t
 	/*
 	 * https://csrc.nist.gov/CSRC/media/Projects/
@@ -692,12 +729,19 @@ test_genaes_gcm(void)
 	struct lws_gencrypto_keyelem e;
 	size_t iv_off = 0;
 
+	int n;
+
 	e.buf = (uint8_t *)gcm_key;
 	e.len = sizeof(gcm_key);
 
 	/* Encrypt */
 
-	if (lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_GCM, &e, 0, NULL)) {
+	n = lws_genaes_create(&ctx, LWS_GAESO_ENC, LWS_GAESM_GCM, &e, 0, NULL);
+	if (n) {
+		if (n == -2) {
+			lwsl_notice("%s: lws_genaes_create unsupported\n", __func__);
+			return 0;
+		}
 		lwsl_err("%s: lws_genaes_create failed\n", __func__);
 		return 1;
 	}
@@ -708,13 +752,13 @@ test_genaes_gcm(void)
 	if (lws_genaes_crypt(&ctx, gcm_aad, sizeof(gcm_aad), NULL,
 			     (uint8_t *)gcm_iv, (uint8_t *)gcm_tag,
 			     &iv_off, sizeof(gcm_tag))) {
-		lwsl_err("%s: lws_genaes_crypt 1 failed\n", __func__);
+		lwsl_err("%s: lws_genaes_crypt 1a failed\n", __func__);
 		goto bail;
 	}
 
 	if (lws_genaes_crypt(&ctx, gcm_pt, sizeof(gcm_pt), res,
 			     NULL, NULL, NULL, 0)) {
-		lwsl_err("%s: lws_genaes_crypt 2 failed\n", __func__);
+		lwsl_err("%s: lws_genaes_crypt 2a failed\n", __func__);
 		goto bail;
 	}
 
@@ -741,13 +785,13 @@ test_genaes_gcm(void)
 	if (lws_genaes_crypt(&ctx, gcm_aad, sizeof(gcm_aad), NULL,
 			     (uint8_t *)gcm_iv, (uint8_t *)gcm_tag,
 			     &iv_off, sizeof(gcm_tag))) {
-		lwsl_err("%s: lws_genaes_crypt 1 failed\n", __func__);
+		lwsl_err("%s: lws_genaes_crypt 1b failed\n", __func__);
 		goto bail;
 	}
 
 	if (lws_genaes_crypt(&ctx, gcm_ct, sizeof(gcm_ct), res,
 			     NULL, NULL, NULL, 0)) {
-		lwsl_err("%s: lws_genaes_crypt 2 failed\n", __func__);
+		lwsl_err("%s: lws_genaes_crypt 2b failed\n", __func__);
 		goto bail;
 	}
 
@@ -769,11 +813,13 @@ bail:
 
 	return -1;
 }
+//#endif
 
 int
 test_genaes(struct lws_context *context)
 {
-#if (defined(LWS_WITH_MBEDTLS) && (!defined(MBEDTLS_CONFIG_H) || defined(MBEDTLS_CIPHER_MODE_CBC))) || \
+#if defined(LWS_WITH_SCHANNEL) || \
+    (defined(LWS_WITH_MBEDTLS) && (!defined(MBEDTLS_CONFIG_H) || defined(MBEDTLS_CIPHER_MODE_CBC))) || \
     (!defined(LWS_WITH_MBEDTLS) && defined(LWS_HAVE_EVP_aes_128_cbc))
 	if (test_genaes_cbc())
 		goto bail;
@@ -783,7 +829,8 @@ test_genaes(struct lws_context *context)
 	if (test_genaes_cfb128())
 		goto bail;
 #endif
-#if (defined(LWS_WITH_MBEDTLS) && (!defined(MBEDTLS_CONFIG_H) || defined(MBEDTLS_CIPHER_MODE_CFB))) || \
+#if defined(LWS_WITH_SCHANNEL) || \
+    (defined(LWS_WITH_MBEDTLS) && (!defined(MBEDTLS_CONFIG_H) || defined(MBEDTLS_CIPHER_MODE_CFB))) || \
     (!defined(LWS_WITH_MBEDTLS) && defined(LWS_HAVE_EVP_aes_128_cfb8))
 	if (test_genaes_cfb8())
 		goto bail;
@@ -793,7 +840,8 @@ test_genaes(struct lws_context *context)
 	if (test_genaes_ctr())
 		goto bail;
 #endif
-#if (defined(LWS_WITH_MBEDTLS)) || \
+#if defined(LWS_WITH_SCHANNEL) || \
+    (defined(LWS_WITH_MBEDTLS)) || \
     (!defined(LWS_WITH_MBEDTLS) && defined(LWS_HAVE_EVP_aes_128_ecb))
 	if (test_genaes_ecb())
 		goto bail;
@@ -809,8 +857,10 @@ test_genaes(struct lws_context *context)
 		goto bail;
 #endif
 
+//#if !defined(LWS_WITH_SCHANNEL)
 	if (test_genaes_gcm())
 		goto bail;
+//#endif
 
 	/* end */
 

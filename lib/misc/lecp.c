@@ -514,6 +514,9 @@ i2:
 				if (ctx->ipos + 1u >= LWS_ARRAY_SIZE(ctx->i))
 					goto reject_overflow;
 
+#if defined(__COVERITY__)
+				ctx->ipos = 0;
+#endif
 				ctx->i[ctx->ipos++] = 0;
 
 				if (pst->cb(ctx, LECPCB_ARRAY_START))
@@ -524,7 +527,8 @@ i2:
 						goto reject_callback;
 					pst->ppos = st->p;
 					ctx->path[pst->ppos] = '\0';
-					ctx->ipos--;
+					if (ctx->ipos) /* cov */
+						ctx->ipos--;
 					lecp_check_path_match(ctx);
 					lwcp_completed(ctx, 0);
 					break;
@@ -673,10 +677,21 @@ push_m:
 		 * We're collecting int / float pieces
 		 */
 		case LECP_COLLECT:
-			if (ctx->be)
-				*ctx->collect_tgt++ = c;
-			else
-				*ctx->collect_tgt-- = c;
+			if (ctx->be) {
+
+				if (ctx->collect_tgt + 1 >= &ctx->item.opcode)
+					*ctx->collect_tgt = c;
+				else
+					*ctx->collect_tgt++ = c;
+
+			} else {
+
+				if (ctx->collect_tgt <= (uint8_t *)&ctx->item.u)
+					*ctx->collect_tgt = c;
+				else
+					*ctx->collect_tgt-- = c;
+
+			}
 
 			if (--st->collect_rem)
 				break;
@@ -985,7 +1000,7 @@ format_scan(const char *fmt)
 		}
 
 		if (numeric) {
-			if (*fmt >= '0' && *fmt <= '9')
+			while (*fmt >= '0' && *fmt <= '9')
 				fmt++;
 			numeric = 0;
 			if (*fmt != '(')
@@ -1119,6 +1134,7 @@ pop:
 
 			return count[0];
 
+		case '-':
 		case '0':
 		case '1':
 		case '2':
@@ -1205,7 +1221,8 @@ lws_lec_int(lws_lec_pctx_t *ctx, uint8_t opcode, uint8_t indet, uint64_t num)
 
 	ctx->scratch[ctx->scratch_len++] = (uint8_t)(opcode | hint);
 	n = 1u << (hint - LWS_CBOR_1);
-	while (n--) {
+	while (n) {
+		n--; /* cov */
 		ctx->scratch[ctx->scratch_len++] = (uint8_t)(num >> 56);
 		num <<= 8;
 	}

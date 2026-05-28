@@ -40,12 +40,25 @@ lws_tls_fake_POLLIN_for_buffered(struct lws_context_per_thread *pt)
 		struct lws *wsi = lws_container_of(p, struct lws,
 						   tls.dll_pending_tls);
 
-		if (wsi->position_in_fds_table >= 0) {
+		/*
+		 * ... allow custom event loop to override our POLLIN-setting
+		 * implementation if it knows how to do it better for its case
+		 */
+					   
+		if (pt->context->event_loop_ops &&
+		    pt->context->event_loop_ops->fake_POLLIN_override)
+			pt->context->event_loop_ops->fake_POLLIN_override(
+							pt->context, pt->tid);
+		else {					
+			if (wsi->position_in_fds_table >= 0) {
 
-			pt->fds[wsi->position_in_fds_table].revents = (short)
-				(pt->fds[wsi->position_in_fds_table].revents |
-				 (pt->fds[wsi->position_in_fds_table].events & LWS_POLLIN));
-			ret |= pt->fds[wsi->position_in_fds_table].revents & LWS_POLLIN;
+				pt->fds[wsi->position_in_fds_table].revents = (short)
+					(pt->fds[wsi->position_in_fds_table].revents |
+					 (pt->fds[wsi->position_in_fds_table].events & LWS_POLLIN));
+				ret |= pt->fds[wsi->position_in_fds_table].revents & LWS_POLLIN;
+
+				// lwsl_notice("%s: faked POLLIN for %s, revents=0x%x\n", __func__, lws_wsi_tag(wsi), pt->fds[wsi->position_in_fds_table].revents);
+			}
 		}
 
 	} lws_end_foreach_dll_safe(p, p1);
@@ -69,6 +82,78 @@ lws_ssl_remove_wsi_from_buffered_list(struct lws *wsi)
 	lws_pt_unlock(pt);
 }
 
+struct lws_tls_ctx_ref *
+lws_tls_ctx_ref_create(struct lws_vhost *vh, lws_tls_ctx *ctx)
+{
+	struct lws_tls_ctx_ref *ref;
+
+	if (!ctx)
+		return NULL;
+
+	ref = lws_zalloc(sizeof(*ref), "ctx_ref");
+	if (!ref)
+		return NULL;
+
+	ref->vh = vh;
+	ref->ctx = ctx;
+	ref->refcount = 1;
+
+	return ref;
+}
+
+struct lws_tls_ctx_ref *
+lws_tls_ctx_ref_get(struct lws_vhost *vh)
+{
+	struct lws_tls_ctx_ref *ref;
+
+	lws_vhost_lock(vh);
+	ref = vh->tls.active_ctx_ref;
+	if (ref)
+		ref->refcount++;
+	lws_vhost_unlock(vh);
+
+	return ref;
+}
+
+void
+lws_tls_ctx_ref_unref(struct lws_tls_ctx_ref *ref)
+{
+	struct lws_vhost *vh;
+
+	if (!ref)
+		return;
+
+	vh = ref->vh;
+	lws_vhost_lock(vh);
+	if (--ref->refcount == 0) {
+		lws_dll2_remove(&ref->list);
+		lws_tls_vhost_backend_free_ctx(ref->ctx);
+		lws_free(ref);
+	}
+	lws_vhost_unlock(vh);
+}
+
+void
+lws_tls_ctx_ref_destroy_all(struct lws_vhost *vhost)
+{
+	if (vhost->tls.active_ctx_ref) {
+		lws_tls_ctx_ref_unref(vhost->tls.active_ctx_ref);
+		vhost->tls.active_ctx_ref = NULL;
+		vhost->tls.ssl_ctx = NULL;
+	}
+
+	lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1,
+				   lws_dll2_get_head(&vhost->tls.retired_ctx_list)) {
+		struct lws_tls_ctx_ref *r = lws_container_of(d, struct lws_tls_ctx_ref, list);
+		lwsl_vhost_err(vhost, "Retired ctx_ref %p leaked with refcount %d", r, r->refcount);
+		/* forcefully free it to avoid memory leak if WSI leaked */
+		lws_dll2_remove(&r->list);
+		lws_tls_vhost_backend_free_ctx(r->ctx);
+		lws_free(r);
+	} lws_end_foreach_dll_safe(d, d1);
+}
+
+
 #if defined(LWS_WITH_SERVER)
 int
 lws_tls_check_cert_lifetime(struct lws_vhost *v)
@@ -90,8 +175,8 @@ lws_tls_check_cert_lifetime(struct lws_vhost *v)
 			return 1;
 
 		life = (ir.time - now) / (24 * 3600);
-		lwsl_vhost_notice(v, "   vhost %s: cert expiry: %dd", v->name,
-			    (int)life);
+		lwsl_vhost_notice(v, "   vhost %s: cert expiry: %lldd", v->name,
+			    (long long)life);
 	} else
 		lwsl_vhost_info(v, "   vhost %s: no cert", v->name);
 
@@ -180,12 +265,42 @@ lws_tls_cert_updated(struct lws_context *context, const char *certpath,
 
 	lws_start_foreach_ll(struct lws_vhost *, v, context->vhost_list) {
 		wsi.a.vhost = v; /* not a real bound wsi */
-		if (v->tls.alloc_cert_path && v->tls.key_path &&
-		    !strcmp(v->tls.alloc_cert_path, certpath) &&
-		    !strcmp(v->tls.key_path, keypath)) {
-			lws_tls_server_certs_load(v, &wsi, certpath, keypath,
+		if (v->tls.cfg_alloc_cert_path && v->tls.cfg_key_path &&
+		    !strcmp(v->tls.cfg_alloc_cert_path, certpath) &&
+		    !strcmp(v->tls.cfg_key_path, keypath)) {
+
+			lws_tls_ctx *old_ctx = v->tls.ssl_ctx;
+			struct lws_tls_ctx_ref *old_ref = v->tls.active_ctx_ref;
+
+			if (lws_tls_vhost_backend_create_ctx(v)) {
+				lwsl_vhost_err(v, "Failed to recreate SSL_CTX");
+				continue;
+			}
+
+			struct lws_tls_ctx_ref *new_ref = lws_tls_ctx_ref_create(v, v->tls.ssl_ctx);
+			if (!new_ref) {
+				lws_tls_vhost_backend_free_ctx(v->tls.ssl_ctx);
+				v->tls.ssl_ctx = old_ctx;
+				continue;
+			}
+
+			if (lws_tls_server_certs_load(v, &wsi, certpath, keypath,
 						  mem_cert, len_mem_cert,
-						  mem_privkey, len_mem_privkey);
+						  mem_privkey, len_mem_privkey)) {
+				/* Failed to load new certs. Revert to old context */
+				lws_tls_ctx_ref_unref(new_ref);
+				v->tls.ssl_ctx = old_ctx;
+				lwsl_vhost_err(v, "Failed to load updated certs");
+				continue;
+			}
+
+			/* Successfully loaded. Commit new ref and retire old ref */
+			v->tls.active_ctx_ref = new_ref;
+
+			if (old_ref) {
+				lws_dll2_add_tail(&old_ref->list, &v->tls.retired_ctx_list);
+				lws_tls_ctx_ref_unref(old_ref);
+			}
 
 			if (v->tls.skipped_certs)
 				lwsl_vhost_notice(v, "vhost %s: cert unset", v->name);
@@ -266,3 +381,24 @@ lws_alpn_comma_to_openssl(const char *comma, uint8_t *os, int len)
 
 
 
+
+void
+lws_tls_cleanup_process(void)
+{
+#if defined(LWS_WITH_MBEDTLS)
+	if (tls_ops_mbedtls.process_cleanup)
+		tls_ops_mbedtls.process_cleanup();
+#elif defined(LWS_WITH_SCHANNEL)
+	if (tls_ops_schannel.process_cleanup)
+		tls_ops_schannel.process_cleanup();
+#elif defined(LWS_WITH_GNUTLS)
+	if (tls_ops_gnutls.process_cleanup)
+		tls_ops_gnutls.process_cleanup();
+#elif defined(LWS_WITH_BEARSSL)
+	if (tls_ops_bearssl.process_cleanup)
+		tls_ops_bearssl.process_cleanup();
+#else
+	if (tls_ops_openssl.process_cleanup)
+		tls_ops_openssl.process_cleanup();
+#endif
+}

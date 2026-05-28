@@ -242,6 +242,29 @@
 #define LWS_SERVER_OPTION_DISABLE_TLS_SESSION_CACHE		 (1ll << 39)
 	/**< (VHOST) Disallow use of client tls caching (on by default) */
 
+#define LWS_SERVER_OPTION_OPENSSL_AUTO_DH_PARAMETERS		 (1ll << 40)
+	/**< Configure openssl to use the default built-in DH parameters
+	 * to support TLSv1.2 Kx=DH ciphers (by calling SSL_CTX_set_dh_auto)
+	 * This is needed when you want to enable TLSv1.2 ephemeral
+	 * Diffie-Hellman (DH) key exchange ciphers
+	 * (e.g. TLS_DHE_RSA_WITH_AES_256_GCM_SHA384). It's not recommended. */
+
+#define LWS_SERVER_OPTION_MBEDTLS_VERIFY_CLIENT_CERT_POST_HANDSHAKE	 ((1ll << 41) | \
+								 (1ll << 12))
+	/**< (VH) An option to be used with mbedtls only, forces server to load 
+	 * and store the client cert (without CA dependent check)
+	 * to be able to verify it later (after the handshake);
+	 * provides LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT.
+	 * Note: LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT and
+	 * LWS_SERVER_OPTION_PEER_CERT_NOT_REQUIRED are ignored if
+	 * LWS_SERVER_OPTION_MBEDTLS_VERIFY_CLIENT_CERT_POST_HANDSHAKE is set */
+
+#define LWS_SERVER_OPTION_VH_INSTANTIATE_ALL_PROTOCOLS		(1ll << 42)
+	/**< (VH) force instantiation of all protocols for this vhost */
+
+#define LWS_SERVER_OPTION_VH_SKIP_PRIV_DROP			(1ll << 43)
+	/**< Cause create vhost api to skip priv drop, requires caller
+	  *  to manage it themselves */
 
 	/****** add new things just above ---^ ******/
 
@@ -334,7 +357,10 @@ struct lws_context_creation_info {
 	 *
 	 * You can also set port to 0, in which case the kernel will pick
 	 * a random port that is not already in use.  You can find out what
-	 * port the vhost is listening on using lws_get_vhost_listen_port() */
+	 * port the vhost is listening on using lws_get_vhost_listen_port()
+	 *
+	 * If options specifies LWS_SERVER_OPTION_UNIX_SOCK, you should set
+	 * port to 0 */
 
 	unsigned int http_proxy_port;
 	/**< VHOST: If http_proxy_address was non-NULL, uses this port */
@@ -428,6 +454,18 @@ struct lws_context_creation_info {
 	 * but it is preferred to use .client_ssl_cipher_list for that.)
 	 * SEE .tls1_3_plus_cipher_list and .client_tls_1_3_plus_cipher_list
 	 * for the equivalent for tls1.3.
+	 *
+	 * For GnuTLS, this instead takes a GnuTLS Priority String.
+	 *
+	 * RECOMMENDATION: For OpenSSL and mbedTLS, it's recommended to use
+	 * .tls_ciphers_iana instead. If .tls_ciphers_iana is provided, this
+	 * field is ignored for those backends.
+	 */
+	const char *tls_ciphers_iana;
+	/**< VHOST: Strict IANA-formatted comma-separated list of ciphers to use.
+	 * If populated, this overrides ssl_cipher_list and provides cross-library
+	 * consistency. (e.g. "TLS_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384")
+	 * Note: Only supported on OpenSSL and mbedTLS backends.
 	 */
 	const char *ecdh_curve;
 	/**< VHOST: if NULL, defaults to initializing server with
@@ -438,6 +476,9 @@ struct lws_context_creation_info {
 	 * or you can leave it as NULL to get "DEFAULT".
 	 * SEE .client_tls_1_3_plus_cipher_list to do the same on the vhost
 	 * client SSL_CTX.
+	 *
+	 * RECOMMENDATION: It's recommended to use .tls_ciphers_iana instead.
+	 * If .tls_ciphers_iana is provided, this field is ignored.
 	 */
 
 	const void *server_ssl_cert_mem;
@@ -517,12 +558,28 @@ struct lws_context_creation_info {
 	const char *client_ssl_cipher_list;
 	/**< VHOST: Client SSL context init: List of valid ciphers to use (eg,
 	* "RC4-MD5:RC4-SHA:AES128-SHA:AES256-SHA:HIGH:!DSS:!aNULL"
-	* or you can leave it as NULL to get "DEFAULT" */
+	* or you can leave it as NULL to get "DEFAULT"
+	*
+	* For GnuTLS, this instead takes a GnuTLS Priority String.
+	*
+	* RECOMMENDATION: For OpenSSL and mbedTLS, it's recommended to use
+	* .client_tls_ciphers_iana instead. If .client_tls_ciphers_iana is provided,
+	* this field is ignored for those backends.
+	*/
+	const char *client_tls_ciphers_iana;
+	/**< VHOST: Strict IANA-formatted comma-separated list of ciphers to use.
+	 * If populated, this overrides client_ssl_cipher_list and provides
+	 * cross-library consistency.
+	 * Note: Only supported on OpenSSL and mbedTLS backends.
+	 */
 	const char *client_tls_1_3_plus_cipher_list;
 	/**< VHOST: List of valid ciphers to use for outgoing client connections
 	 * ON TLS1.3 AND ABOVE on this vhost (eg,
 	 * "TLS_CHACHA20_POLY1305_SHA256") or you can leave it as NULL to get
 	 * "DEFAULT".
+	 *
+	 * RECOMMENDATION: It's recommended to use .client_tls_ciphers_iana instead.
+	 * If .client_tls_ciphers_iana is provided, this field is ignored.
 	 */
 
 	long ssl_client_options_set;
@@ -540,7 +597,7 @@ struct lws_context_creation_info {
 
 #endif
 
-#if !defined(LWS_WITH_MBEDTLS)
+#if !defined(LWS_WITH_MBEDTLS) && !defined(LWS_WITH_BEARSSL)
 	SSL_CTX *provided_client_ssl_ctx;
 	/**< CONTEXT: If non-null, swap out libwebsockets ssl
 	  * implementation for the one provided by provided_ssl_ctx.
@@ -939,6 +996,7 @@ struct lws_context_creation_info {
 	 * server to forcibly add.  If given, the list of strings must be
 	 * terminated with a NULL.
 	 */
+
 #endif
 
 #if defined(WIN32)
@@ -949,6 +1007,45 @@ struct lws_context_creation_info {
 	 */
 #endif
 
+	int default_loglevel;
+	/**< CONTEXT: 0 for LLL_USER, LLL_ERR, LLL_WARN, LLL_NOTICE enabled by default when
+	 * using lws_cmdline_option_handle_builtin(), else set to the LLL_ flags you want
+	 * to be the default before calling lws_cmdline_option_handle_builtin().  Your
+	 * selected default loglevel can then be cleanly overridden using -d 1039 etc
+	 * commandline switch */
+
+	lws_sockfd_type		vh_listen_sockfd;
+	/**< VHOST: 0 for normal vhost listen socket fd creation, if any.
+	 * Nonzero to force the selection of an already-existing fd for the
+	 * vhost's listen socket, which is already prepared.  This is intended
+	 * for an external process having chosen the fd, which cannot then be
+	 * zero.
+	 */
+
+#if defined(LWS_WITH_NETWORK)
+	const char		*wol_if;
+	/**< CONTEXT: NULL, or interface name to bind outgoing WOL packet to */
+#endif
+
+	const char		*lws_stub;
+	/**< CONTEXT: if non-NULL, the name of the stub function requested
+	 * via --lws-stub=... commandline switch.  Filled in by
+	 * lws_cmdline_option_handle_builtin(). */
+	int			argc;
+	/**< CONTEXT: optionally pass the app commandline to the context, so we can use it
+	 * as part of lws_cmdline_option_cx() */
+	const char		**argv;
+	/**< CONTEXT: optionally pass the app commandline to the context, so we can use it
+	 * as part of lws_cmdline_option_cx() */
+
+#if defined(LWS_WITH_ASYNC_QUEUE)
+	uint8_t			count_async_threads;
+	/**< CONTEXT: Max number of separate worker threads allowed
+	 *   to be spawned for async operations like TLS accept and
+	 *   file serving.  0 means 1 thread maximum if the feature
+	 *   is enabled. */
+#endif
+
 	/* Add new things just above here ---^
 	 * This is part of the ABI, don't needlessly break compatibility
 	 *
@@ -957,7 +1054,10 @@ struct lws_context_creation_info {
 	 * was not built against the newer headers.
 	 */
 
-	void *_unused[2]; /**< dummy */
+	uint32_t			quic_mtu;
+	/**< VHOST: 0 for default (1280), or the desired QUIC MTU for the vhost */
+
+	void *_unused[1]; /**< dummy */
 };
 
 /**
@@ -1008,6 +1108,18 @@ lws_create_context(const struct lws_context_creation_info *info);
  */
 LWS_VISIBLE LWS_EXTERN void
 lws_context_destroy(struct lws_context *context);
+
+/**
+ * lws_tls_cleanup_process() - cleanup process-wide TLS allocations
+ *
+ *	This function can be called after the last context is destroyed to
+ *	cleanup process-wide TLS allocations. For example, for OpenSSL it
+ *	may call OPENSSL_cleanup() if supported.
+ *	You should only call this if you are absolutely sure you will not
+ *	reinitialize libwebsockets or the TLS library in this process.
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_tls_cleanup_process(void);
 
 typedef int (*lws_reload_func)(void);
 
@@ -1244,6 +1356,20 @@ LWS_VISIBLE LWS_EXTERN int
 lws_cmdline_passfail(int argc, const char **argv, int actual);
 
 /**
+ * lws_systemd_inherited_fd() - prepare vhost creation info for systemd exported fd if any
+ *
+ * \param index: 0+ index of exported fd
+ * \param info: info struct to be prepared with related info, if any
+ *
+ * Returns 0 and points info to the related fd, aligning the other information
+ * to the type of fd and port it is bound to, or returns nonzero if no such
+ * inherited fd.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_systemd_inherited_fd(unsigned int index,
+			 struct lws_context_creation_info *info);
+
+/**
  * lws_context_is_being_destroyed() - find out if context is being destroyed
  *
  * \param context: the struct lws_context pointer
@@ -1291,7 +1417,8 @@ enum lws_mount_protocols {
 	LWSMPRO_CGI		= 3, /**< pass to CGI to handle */
 	LWSMPRO_REDIR_HTTP	= 4, /**< redirect to http:// url */
 	LWSMPRO_REDIR_HTTPS	= 5, /**< redirect to https:// url */
-	LWSMPRO_CALLBACK	= 6, /**< hand by named protocol's callback */
+	LWSMPRO_CALLBACK	= 6, /**< handle by named protocol's callback */
+	LWSMPRO_NO_MOUNT        = 7, /**< matches fall back to no match processing */
 };
 
 /** enum lws_authentication_mode
@@ -1342,6 +1469,9 @@ struct lws_http_mount {
 	unsigned int cache_revalidate:1; /**< set if client cache should revalidate on use */
 	unsigned int cache_intermediaries:1; /**< set if intermediaries are allowed to cache */
 	unsigned int cache_no:1; /**< set if client should check cache always*/
+	unsigned int exact_match:1; /**< set if mountpoint must match exactly */
+	unsigned int append_path:1; /**< set if we should append the rest of the path during a redirect */
+	unsigned int no_ws_upgrades:1; /**< set to ignore this mount for ws upgrades */
 
 	unsigned char origin_protocol; /**< one of enum lws_mount_protocols */
 	unsigned char mountpoint_len; /**< length of mountpoint string */
@@ -1349,10 +1479,40 @@ struct lws_http_mount {
 	const char *basic_auth_login_file;
 	/**<NULL, or filepath to use to check basic auth logins against. (requires LWSAUTHM_DEFAULT) */
 
+	const char *cgi_chroot_path;
+	/**< NULL, or chroot patch for child cgi process */
+
+	const char *cgi_wd;
+	/**< working directory to cd to after fork of a cgi process,
+	 * NULL defaults to /tmp
+	 */
+
+	const struct lws_protocol_vhost_options *headers;
+		/**< NULL, or pointer to optional linked list of
+		 * canned headers that are added to server responses.
+		 * If given, these override the headers given at
+		 * the vhost and are used instead of those when
+		 * the mountpoint matches.  This allows to control,
+		 * eg, CSP on a per-mount basis.
+		 */
+	unsigned int keepalive_timeout;
+		/**< 0 or seconds http stream should stay alive while
+		 * idle.  0 means use the vhost value for keepalive_timeout.
+		 */
+#if defined(LWS_WITH_JOSE)
+	const char *interceptor_path;
+	/**< NULL, or an alternative mount path to divert the connection to
+	 * if the protocol on that mount says we are not authorized.
+	 */
+#endif
+
 	/* Add new things just above here ---^
 	 * This is part of the ABI, don't needlessly break compatibility
 	 */
 };
+
+LWS_VISIBLE LWS_EXTERN void
+lws_vhost_set_mounts(struct lws_vhost *v, const struct lws_http_mount *mounts);
 
 ///@}
 ///@}

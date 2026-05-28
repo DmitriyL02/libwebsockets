@@ -49,7 +49,8 @@ lws_http_client_connect_via_info2(struct lws *wsi)
 	wsi->a.opaque_user_data = wsi->stash->opaque_user_data;
 
 	if (stash->cis[CIS_METHOD] && (!strcmp(stash->cis[CIS_METHOD], "RAW") ||
-				      !strcmp(stash->cis[CIS_METHOD], "MQTT")))
+				      !strcmp(stash->cis[CIS_METHOD], "MQTT") ||
+				      !strcmp(stash->cis[CIS_METHOD], "QUIC")))
 		goto no_ah;
 
 	/*
@@ -68,7 +69,7 @@ lws_http_client_connect_via_info2(struct lws *wsi)
 #endif
 
 no_ah:
-	return lws_client_connect_2_dnsreq(wsi);
+	return lws_client_connect_2_dnsreq_MAY_CLOSE_WSI(wsi);
 
 bail:
 #if defined(LWS_WITH_SOCKS5)
@@ -177,7 +178,7 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 
 				if (!vh) { /* coverity */
 					lwsl_cx_err(i->context, "no vhost");
-					goto bail;
+					goto bail; /* this frees the wsi */
 				}
 				if (!strcmp(vh->name, "system"))
 					vh = vh->vhost_next;
@@ -361,6 +362,22 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 	lws_snprintf(buf_localport, sizeof(buf_localport), "%u", i->local_port);
 	cisin[CIS_LOCALPORT]	= buf_localport;
 	cisin[CIS_ALPN]		= i->alpn;
+	cisin[CIS_USERNAME]	= i->auth_username;
+	cisin[CIS_PASSWORD]	= i->auth_password;
+
+/*
+	lwsl_notice("%d\n", (int)(cisin[CIS_ADDRESS] ? (int)strlen(cisin[CIS_ADDRESS]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_PATH] ? (int)strlen(cisin[CIS_PATH]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_HOST] ? (int)strlen(cisin[CIS_HOST]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_ORIGIN] ? (int)strlen(cisin[CIS_ORIGIN]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_PROTOCOL] ? (int)strlen(cisin[CIS_PROTOCOL]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_METHOD] ? (int)strlen(cisin[CIS_METHOD]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_IFACE] ? (int)strlen(cisin[CIS_IFACE]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_LOCALPORT] ? (int)strlen(cisin[CIS_LOCALPORT]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_ALPN] ? (int)strlen(cisin[CIS_ALPN]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_USERNAME] ? (int)strlen(cisin[CIS_USERNAME]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_PASSWORD] ? (int)strlen(cisin[CIS_PASSWORD]) : -1));
+*/
 
 	if (lws_client_stash_create(wsi, cisin))
 		goto bail;
@@ -383,9 +400,9 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 		 */
 		__lws_lc_tag(i->context, &i->context->lcg[
 #if defined(LWS_WITH_SECURE_STREAMS_PROXY_API)
-		         i->ssl_connection & LCCSCF_SECSTREAM_PROXY_LINK ? LWSLCG_WSI_SSP_CLIENT :
+		         (i->ssl_connection & LCCSCF_SECSTREAM_PROXY_LINK) ? LWSLCG_WSI_SSP_CLIENT :
 #if defined(LWS_WITH_SERVER)
-		         (i->ssl_connection & LCCSCF_SECSTREAM_PROXY_ONWARD ? LWSLCG_WSI_SSP_ONWARD :
+		         ((i->ssl_connection & LCCSCF_SECSTREAM_PROXY_ONWARD) ? LWSLCG_WSI_SSP_ONWARD :
 #endif
 			  LWSLCG_WSI_CLIENT
 #if defined(LWS_WITH_SERVER)
@@ -398,7 +415,7 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 			&wsi->lc, "%s/%s/%s/(%s)", i->method ? i->method : "WS",
 			wsi->role_ops->name, i->address,
 #if defined(LWS_WITH_SECURE_STREAMS_PROXY_API)
-			wsi->client_bound_sspc ?
+			(i->ssl_connection & LCCSCF_SECSTREAM_PROXY_LINK) ?
 				lws_sspc_tag((lws_sspc_handle_t *)i->opaque_user_data) :
 #endif
 			lws_ss_tag(((lws_ss_handle_t *)i->opaque_user_data)));
@@ -461,7 +478,11 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 
 	/* raw socket per se doesn't want this... raw socket proxy wants it... */
 
-	if (wsi->role_ops != &role_ops_raw_skt ||
+	if ((wsi->role_ops != &role_ops_raw_skt &&
+#if defined(LWS_ROLE_QUIC)
+	     wsi->role_ops != &role_ops_quic &&
+#endif
+	     1) ||
 	    (i->local_protocol_name &&
 	     !strcmp(i->local_protocol_name, "raw-proxy"))) {
 		lwsl_wsi_debug(wsi, "adoption cb %d to %s %s",
@@ -479,7 +500,8 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 					     i->uri_replace_to);
 #endif
 
-	if (i->method && (!strcmp(i->method, "RAW") // ||
+	if (i->method && (!strcmp(i->method, "RAW") ||
+			  !strcmp(i->method, "QUIC") // ||
 //			  !strcmp(i->method, "MQTT")
 	)) {
 
@@ -492,16 +514,20 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 
 		wsi->tls.ssl = NULL;
 
-		if (wsi->tls.use_ssl & LCCSCF_USE_SSL) {
+		if (strcmp(wsi->role_ops->name, "raw-skt") != 0 &&
+		    (wsi->tls.use_ssl & LCCSCF_USE_SSL)) {
 			const char *cce = NULL;
+			int do_c1 = 1;
 
-			switch (
-#if !defined(LWS_WITH_SYS_ASYNC_DNS)
-			lws_client_create_tls(wsi, &cce, 1)
-#else
-			lws_client_create_tls(wsi, &cce, 0)
+#if defined(LWS_WITH_SYS_ASYNC_DNS)
+			do_c1 = 0;
 #endif
-			) {
+#if defined(LWS_ROLE_QUIC)
+			if (!strcmp(wsi->role_ops->name, "quic"))
+				do_c1 = 0;
+#endif
+
+			switch (lws_client_create_tls(wsi, &cce, do_c1)) {
 			case 1:
 				return wsi;
 			case 0:
@@ -529,7 +555,7 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 
 #if defined(LWS_WITH_TLS)
 bail3:
-	lwsl_wsi_info(wsi, "tls start fail");
+	lwsl_wsi_err(wsi, "tls start fail");
 	lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "tls start fail");
 
 	if (i->pwsi)
@@ -539,6 +565,8 @@ bail3:
 #endif
 
 bail:
+	lws_dll2_remove(&wsi->pre_natal);
+
 #if defined(LWS_WITH_TLS)
 	if (wsi->tls.ssl)
 		lws_tls_restrict_return(wsi);

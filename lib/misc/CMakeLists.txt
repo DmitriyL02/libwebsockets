@@ -34,6 +34,7 @@ if (NOT LWS_ONLY_SSPC)
 list(APPEND SOURCES
 	misc/base64-decode.c
 	misc/prng.c
+	misc/lws-crc32.c
 	misc/lws-ring.c)
 
 if (LWS_WITH_NETWORK)
@@ -72,6 +73,22 @@ endif()
 if (LWS_WITH_JPEG)
 	list(APPEND SOURCES
 		misc/jpeg.c)
+endif()
+if (LWS_WITH_DHT)
+	list(APPEND SOURCES
+		misc/dht/dht.c
+		misc/dht/dht-id.c
+		misc/dht/dht-bencode.c
+		misc/dht/dht-tx.c)
+endif()
+
+if (LWS_WITH_DHT_BACKEND)
+	list(APPEND SOURCES
+		misc/dht/dht-backend.c
+		misc/dht/dht-backend-bucket.c
+		misc/dht/dht-backend-search.c
+		misc/dht/dht-backend-storage.c
+		misc/dht/dht-backend-rpc.c)
 endif()
 
 
@@ -136,6 +153,10 @@ if (LWS_WITH_DIR AND NOT LWS_PLAT_BAREMETAL)
 	list(APPEND SOURCES misc/dir.c)
 endif()
 
+if (LWS_WITH_DIR AND NOT LWS_PLAT_BAREMETAL)
+	list(APPEND SOURCES misc/dir-notify/dir-notify.c)
+endif()
+
 if (LWS_WITH_THREADPOOL AND LWS_HAVE_PTHREAD_H)
 	list(APPEND SOURCES misc/threadpool/threadpool.c)
 endif()
@@ -182,6 +203,11 @@ if (LWS_WITH_LHP)
 
 endif()
 
+if (LWS_WITH_MNEMONIC)
+	list(APPEND SOURCES
+		misc/mnemonic.c)
+endif()
+
 if (UNIX)
 	if (NOT LWS_HAVE_GETIFADDRS)
 		list(APPEND HDR_PRIVATE misc/getifaddrs.h)
@@ -195,6 +221,12 @@ if (NOT WIN32 AND NOT LWS_WITHOUT_DAEMONIZE)
 endif()
 
 endif()
+
+if (LWS_WITH_QRCODEGEN)
+	list(APPEND SOURCES
+		misc/qrcodegen.c)
+endif()
+
 #
 # Keep explicit parent scope exports at end
 #

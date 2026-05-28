@@ -56,6 +56,11 @@ enum lws_client_connect_ssl_connection_flags {
 	 * then it is not possible to bind to this port for any local address
 	 */
 
+	LCCSCF_IPV6_PREFER_PUBLIC_ADDR				= (1 << 15),
+	/**< RFC5014 - For IPv6 systems with SLAAC config, allow for preference
+	 * to bind a socket to public address vs temporary private address
+	 */
+
 	LCCSCF_PIPELINE				= (1 << 16),
 		/**< Serialize / pipeline multiple client connections
 		 * on a single connection where possible.
@@ -106,6 +111,22 @@ enum lws_client_connect_ssl_connection_flags {
 	LCCSCF_CACHE_COOKIES			= (1 << 30),
 	/**< If built with -DLWS_WITH_CACHE_NSCOOKIEJAR, store and reapply
 	 * http cookies in a Netscape Cookie Jar on this connection */
+};
+
+/*
+ * All lws_tls...() functions must return this type, converting the
+ * native backend result and doing the extra work to determine which one
+ * as needed.
+ *
+ * Native TLS backend return codes are NOT ALLOWED outside the backend.
+ *
+ * Non-SSL mode also uses these types.
+ */
+enum lws_ssl_capable_status {
+	LWS_SSL_CAPABLE_ERROR			= -1, /* it failed */
+	LWS_SSL_CAPABLE_DONE			= 0,  /* it succeeded */
+	LWS_SSL_CAPABLE_MORE_SERVICE_READ	= -2, /* retry WANT_READ */
+	LWS_SSL_CAPABLE_MORE_SERVICE_WRITE	= -3, /* retry WANT_WRITE */
 };
 
 /** struct lws_client_connect_info - parameters to connect with when using
@@ -239,6 +260,20 @@ struct lws_client_connect_info {
 	 * context template to take a copy of for this wsi.  Used to isolate
 	 * wsi-specific logs into their own stream or file.
 	 */
+	const char *auth_username;
+	const char *auth_password;
+
+#if defined(LWS_ROLE_WS)
+	uint8_t		allow_reserved_bits;
+	/**< non-zero to allow reserved bits. You can get it by lws_get_reserved_bits().
+	 * Note: default zero means close the websocket connection for non-zero rsv.
+	 */
+
+	uint8_t		allow_unknown_opcode;
+	/**< non-zero to allow unknown opcode. You can get it by `lws_get_opcode`.
+	 * None: default zero means close the websocket connection for unknown opcode.
+	 */
+#endif
 
 	/* Add new things just above here ---^
 	 * This is part of the ABI, don't needlessly break compatibility
@@ -377,11 +412,57 @@ lws_client_http_body_pending(struct lws *wsi, int something_left_to_send);
  * This issues a multipart mime boundary, or terminator if name = NULL.
  *
  * Returns 0 if OK or nonzero if couldn't fit in buffer
+ *
+ * This is deprecated in favour of the below lws_http_mp apis
  */
 LWS_VISIBLE LWS_EXTERN int
 lws_client_http_multipart(struct lws *wsi, const char *name,
 			  const char *filename, const char *content_type,
 			  char **p, char *end);
+
+struct lws_http_mp_sm;
+typedef int (*lws_http_mp_sm_cb_t)(struct lws_context *cx, char *ft, size_t ft_len, const char **last);
+
+/**
+ * lws_http_mp_sm_init() - allocate and init an http post multipart state machine
+ *
+ * \p wsi: the wsi this will be used on
+ * \p cb: the http_mp callback for getting next form item
+ * \p p: pointer to pointer to next header byte
+ * \p end: pointer to last possible header byte
+ *
+ * Returns a new and initialized multipart post state machine object,
+ * or NULL if OOM or other problems.
+ */
+LWS_VISIBLE LWS_EXTERN struct lws_http_mp_sm *
+lws_http_mp_sm_init(struct lws *wsi, lws_http_mp_sm_cb_t cb, uint8_t **p, uint8_t *end);
+
+/**
+ * lws_http_mp_sm_destroy() - deallocates an http post multipart state machine
+ *
+ * \p pphms: pointer to http_mp_sm pointer
+ *
+ * Frees and sets the pointed-to pointer to NULL.
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_http_mp_sm_destroy(struct lws_http_mp_sm **pphms);
+
+/**
+ * lws_http_mp_sm_fill() - fills a buffer with the next fragment of form data
+ *
+ * \p phms: pointer to http_mp_sm
+ * \p p: cursor into buffer - moved on by call
+ * \p end: last byte of buffer
+ *
+ * Fills \p *p potentially to \p end with form data, and moves
+ * *p on by the amount used.
+ *
+ * Returns 0 if successful (and *p has been moved on to show the extent
+ * of the written amount) or nonzero for failure
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_http_mp_sm_fill(struct lws_http_mp_sm *phms, uint8_t **p, uint8_t *end);
+
 
 /**
  * lws_http_basic_auth_gen() - helper to encode client basic auth string
@@ -399,6 +480,26 @@ LWS_VISIBLE LWS_EXTERN int
 lws_http_basic_auth_gen(const char *user, const char *pw, char *buf, size_t len);
 
 /**
+ * lws_http_basic_auth_gen2() - helper to encode client basic auth string
+ *
+ * \param user: user name
+ * \param pw: password
+ * \param pwd_len: count of bytes in password
+ * \param buf: where to store base64 result
+ * \param len: max usable size of buf
+ *
+ * Encodes a username and password in Basic Auth format for use with the
+ * Authorization header.  On return, buf is filled with something like
+ * "Basic QWxhZGRpbjpPcGVuU2VzYW1l".
+ *
+ * This differs from lws_http_baic_auth_gen() in that NUL bytes can
+ * appear in the password due to an explicit password length argument.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_http_basic_auth_gen2(const char *user, const void *pw, size_t pwd_len,
+                         char *buf, size_t len);
+
+/**
  * lws_tls_session_is_reused() - returns nonzero if tls session was cached
  *
  * \param wsi: the wsi
@@ -414,5 +515,33 @@ lws_http_basic_auth_gen(const char *user, const char *pw, char *buf, size_t len)
  */
 LWS_VISIBLE LWS_EXTERN int
 lws_tls_session_is_reused(struct lws *wsi);
+
+/**
+ * lws_tls_client_connect() - perform/progress TLS handshake on client connection
+ *
+ * \param wsi: client connection
+ * \param errbuf: buffer for error string
+ * \param len: length of errbuf
+ *
+ * This is usually handled automatically by lws if LCCSCF_USE_SSL was set on
+ * the connection. However for STARTTLS type protocols, the connection
+ * starts in cleartext and this can be called manually later to perform the
+ * TLS handshake.
+ */
+LWS_VISIBLE LWS_EXTERN enum lws_ssl_capable_status
+lws_tls_client_connect(struct lws *wsi, char *errbuf, size_t len);
+
+/**
+ * lws_tls_client_upgrade() - upgrade a non-TLS client connection to TLS
+ *
+ * \param wsi: client connection
+ * \param ssl_flags: LCCSCF_ flags to apply
+ *
+ * For STARTTLS type protocols, this can be called to transition a RAW
+ * connection to TLS. It handles structure initialization and starts the
+ * handshake.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_tls_client_upgrade(struct lws *wsi, int ssl_flags);
 
 ///@}

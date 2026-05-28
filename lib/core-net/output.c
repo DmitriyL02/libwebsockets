@@ -114,7 +114,8 @@ lws_issue_raw(struct lws *wsi, unsigned char *buf, size_t len)
 		/* we're going to close, let close know sends aren't possible */
 		wsi->socket_is_permanently_unusable = 1;
 		return -1;
-	case LWS_SSL_CAPABLE_MORE_SERVICE:
+	case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
+	case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
 		/*
 		 * nothing got sent, not fatal.  Retry the whole thing later,
 		 * ie, implying treat it was a truncated send so it gets
@@ -249,6 +250,11 @@ lws_ssl_capable_read_no_ssl(struct lws *wsi, unsigned char *buf, size_t len)
 	int n = 0, en;
 
 	errno = 0;
+
+#if defined(LWS_WITH_LATENCY)
+	lws_usec_t _lws_start = lws_now_usecs();
+#endif
+
 #if defined(LWS_WITH_UDP)
 	if (lws_wsi_is_udp(wsi)) {
 		socklen_t slt = sizeof(wsi->udp->sa46);
@@ -266,6 +272,16 @@ lws_ssl_capable_read_no_ssl(struct lws *wsi, unsigned char *buf, size_t len)
 				(int)
 #endif
 				len, 0);
+
+#if defined(LWS_WITH_LATENCY)
+	{
+		unsigned int ms = (unsigned int)((lws_now_usecs() - _lws_start) / 1000);
+		if (ms > 2) {
+			lws_latency_note(&wsi->a.context->pt[(int)wsi->tsi], _lws_start, 2000, "recv:%dms", ms);
+		}
+	}
+#endif
+
 	en = LWS_ERRNO;
 	if (n >= 0) {
 
@@ -291,7 +307,7 @@ lws_ssl_capable_read_no_ssl(struct lws *wsi, unsigned char *buf, size_t len)
 	if (en == LWS_EAGAIN ||
 	    en == LWS_EWOULDBLOCK ||
 	    en == LWS_EINTR)
-		return LWS_SSL_CAPABLE_MORE_SERVICE;
+		return LWS_SSL_CAPABLE_MORE_SERVICE_READ;
 
 do_err:
 #if defined(LWS_WITH_SYS_METRICS) && defined(LWS_WITH_SERVER)
@@ -310,6 +326,10 @@ lws_ssl_capable_write_no_ssl(struct lws *wsi, unsigned char *buf, size_t len)
 	int n = 0;
 #if defined(LWS_PLAT_OPTEE)
 	ssize_t send(int sockfd, const void *buf, size_t len, int flags);
+#endif
+
+#if defined(LWS_WITH_LATENCY)
+	lws_usec_t _lws_start = lws_now_usecs();
 #endif
 
 #if defined(LWS_WITH_UDP)
@@ -351,6 +371,15 @@ lws_ssl_capable_write_no_ssl(struct lws *wsi, unsigned char *buf, size_t len)
 					len, MSG_NOSIGNAL);
 //	lwsl_info("%s: sent len %d result %d", __func__, len, n);
 
+#if defined(LWS_WITH_LATENCY)
+	{
+		unsigned int ms = (unsigned int)((lws_now_usecs() - _lws_start) / 1000);
+		if (ms > 2) {
+			lws_latency_note(&wsi->a.context->pt[(int)wsi->tsi], _lws_start, 2000, "send:%dms", ms);
+		}
+	}
+#endif
+
 #if defined(LWS_WITH_UDP)
 post_send:
 #endif
@@ -364,7 +393,7 @@ post_send:
 			lws_set_blocking_send(wsi);
 		}
 
-		return LWS_SSL_CAPABLE_MORE_SERVICE;
+		return LWS_SSL_CAPABLE_MORE_SERVICE_WRITE;
 	}
 
 	lwsl_wsi_debug(wsi, "ERROR writing len %d to skt fd %d err %d / errno %d",

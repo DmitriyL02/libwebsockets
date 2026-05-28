@@ -234,10 +234,12 @@ init_vhost_listen_wsi_sd(struct lws *wsi)
 static int
 elops_listen_init_sdevent(struct lws_dll2 *d, void *user)
 {
+#if defined(LWS_WITH_SERVER)
 	struct lws *wsi = lws_container_of(d, struct lws, listen_list);
 
 	if (init_vhost_listen_wsi_sd(wsi) == -1)
 		return -1;
+#endif
 
 	return 0;
 }
@@ -368,9 +370,11 @@ run_pt_sd(struct lws_context *context, int tsi)
 static int
 elops_listen_destroy_sdevent(struct lws_dll2 *d, void *user)
 {
+#if defined(LWS_WITH_SERVER)
 	struct lws *wsi = lws_container_of(d, struct lws, listen_list);
 
 	wsi_logical_close_sd(wsi);
+#endif
 
 	return 0;
 }
@@ -432,10 +436,10 @@ LWS_VISIBLE
 #endif
 const lws_plugin_evlib_t evlib_sd = {
 		.hdr = {
-				"systemd event loop",
-				"lws_evlib_plugin",
-				LWS_BUILD_HASH,
-				LWS_PLUGIN_API_MAGIC
+				.name = "systemd event loop",
+				._class = "lws_evlib_plugin",
+				.lws_build_hash = LWS_BUILD_HASH,
+				.api_magic = LWS_PLUGIN_API_MAGIC
 		},
 
 		.ops	= &event_loop_ops_sdevent

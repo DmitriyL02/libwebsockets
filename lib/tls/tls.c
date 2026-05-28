@@ -25,14 +25,71 @@
 #include "private-lib-core.h"
 #include "private-lib-tls.h"
 
+#if defined(LWS_HAVE_SSL_CTX_set_keylog_callback) && defined(LWS_WITH_NETWORK) && \
+	defined(LWS_WITH_TLS) && !defined(LWS_WITH_MBEDTLS) && \
+	!defined(LWS_WITH_GNUTLS) && !defined(LWS_WITH_BEARSSL) && \
+	(defined(LWS_WITH_CLIENT) || defined(LWS_WITH_SERVER))
+void
+lws_klog_dump(const SSL *ssl, const char *line)
+{
+	struct lws *wsi = (struct lws *)SSL_get_ex_data(ssl,
+					  openssl_websocket_private_data_index);
+	char path[128], hdr[128], ts[64];
+	size_t w = 0, wx = 0;
+	int fd, t;
+
+	if (!wsi || !wsi->a.context->keylog_file[0] || !wsi->a.vhost)
+		return;
+
+	lws_snprintf(path, sizeof(path), "%s.%s", wsi->a.context->keylog_file,
+			wsi->a.vhost->name);
+
+	fd = open(path, O_CREAT | O_RDWR | O_APPEND, 0600);
+	if (fd == -1) {
+		lwsl_vhost_warn(wsi->a.vhost, "Failed to append %s", path);
+		return;
+	}
+
+	/* the first item in the chunk */
+	if (!strncmp(line, "SERVER_HANDSHAKE_TRAFFIC_SECRET", 31)) {
+		w += (size_t)write(fd, "\n# ", 3);
+		wx += 3;
+		t = lwsl_timestamp(LLL_WARN, ts, sizeof(ts));
+		wx += (size_t)t;
+		w += (size_t)write(fd, ts, (size_t)t);
+
+		t = lws_snprintf(hdr, sizeof(hdr), "%s\n", wsi->lc.gutag);
+		w += (size_t)write(fd, hdr, (size_t)t);
+		wx += (size_t)t;
+
+		lwsl_vhost_warn(wsi->a.vhost, "appended ssl keylog: %s", path);
+	}
+
+	wx += strlen(line) + 1;
+	w += (size_t)write(fd, line, 
+#if defined(WIN32)
+			(unsigned int)
+#endif
+			strlen(line));
+	w += (size_t)write(fd, "\n", 1);
+	close(fd);
+
+	if (w != wx) {
+		lwsl_vhost_warn(wsi->a.vhost, "Failed to write %s", path);
+		return;
+	}
+}
+#endif
+
+
 #if defined(LWS_WITH_NETWORK)
-#if defined(LWS_WITH_MBEDTLS) || (defined(OPENSSL_VERSION_NUMBER) && \
+#if (!defined(LWS_WITH_MBEDTLS) && !defined(LWS_WITH_BEARSSL) && !defined(LWS_WITH_SCHANNEL) && defined(OPENSSL_VERSION_NUMBER) && \
 				  OPENSSL_VERSION_NUMBER >= 0x10002000L)
 static int
 alpn_cb(SSL *s, const unsigned char **out, unsigned char *outlen,
 	const unsigned char *in, unsigned int inlen, void *arg)
 {
-#if !defined(LWS_WITH_MBEDTLS)
+#if !defined(LWS_WITH_MBEDTLS) && !defined(LWS_WITH_BEARSSL)
 	struct alpn_ctx *alpn_ctx = (struct alpn_ctx *)arg;
 
 	if (SSL_select_next_proto((unsigned char **)out, outlen, alpn_ctx->data,
@@ -61,7 +118,7 @@ lws_tls_restrict_borrow(struct lws *wsi)
 	    cx->simultaneous_ssl_handshake >=
 			    cx->simultaneous_ssl_handshake_restriction) {
 		lwsl_notice("%s: tls handshake limit %d\n", __func__,
-			    cx->simultaneous_ssl);
+			    cx->simultaneous_ssl_handshake);
 		return 1;
 	}
 
@@ -155,8 +212,9 @@ lws_tls_restrict_return(struct lws *wsi)
 void
 lws_context_init_alpn(struct lws_vhost *vhost)
 {
-#if defined(LWS_WITH_MBEDTLS) || (defined(OPENSSL_VERSION_NUMBER) && \
-				  OPENSSL_VERSION_NUMBER >= 0x10002000L)
+#if defined(LWS_WITH_MBEDTLS) || defined(LWS_WITH_BEARSSL) || (defined(OPENSSL_VERSION_NUMBER) && \
+				  OPENSSL_VERSION_NUMBER >= 0x10002000L) || \
+				  defined(LWS_WITH_GNUTLS)
 	const char *alpn_comma = vhost->context->tls.alpn_default;
 
 	if (vhost->tls.alpn)
@@ -169,23 +227,32 @@ lws_context_init_alpn(struct lws_vhost *vhost)
 					vhost->tls.alpn_ctx.data,
 					sizeof(vhost->tls.alpn_ctx.data) - 1);
 
+#if defined(LWS_WITH_GNUTLS)
+	/* GnuTLS ALPN is set per-session, nothing to do here for CTX */
+#elif defined(LWS_WITH_MBEDTLS) || defined(LWS_WITH_BEARSSL)
+	/* MbedTLS/BearSSL ALPN is set per-session, nothing to do here for CTX */
+#else
 	SSL_CTX_set_alpn_select_cb(vhost->tls.ssl_ctx, alpn_cb,
 				   &vhost->tls.alpn_ctx);
+#endif
 #else
+#if !defined(LWS_WITH_SCHANNEL) && !defined(LWS_WITH_GNUTLS)
 	lwsl_err(" HTTP2 / ALPN configured "
 		 "but not supported by OpenSSL 0x%lx\n",
 		 OPENSSL_VERSION_NUMBER);
+#endif
 #endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
 }
 
 int
 lws_tls_server_conn_alpn(struct lws *wsi)
 {
-#if defined(LWS_WITH_MBEDTLS) || (defined(OPENSSL_VERSION_NUMBER) && \
-				  OPENSSL_VERSION_NUMBER >= 0x10002000L)
+#if defined(LWS_WITH_MBEDTLS) || defined(LWS_WITH_BEARSSL) || (defined(OPENSSL_VERSION_NUMBER) && \
+				  OPENSSL_VERSION_NUMBER >= 0x10002000L) || \
+				  defined(LWS_WITH_GNUTLS)
 	const unsigned char *name = NULL;
 	char cstr[10];
-	unsigned len;
+	unsigned int len = 0;
 
 	lwsl_info("%s\n", __func__);
 
@@ -194,7 +261,23 @@ lws_tls_server_conn_alpn(struct lws *wsi)
 		return 0;
 	}
 
+#if defined(LWS_WITH_GNUTLS)
+	{
+		gnutls_datum_t selected;
+		if (gnutls_alpn_get_selected_protocol((gnutls_session_t)wsi->tls.ssl, &selected) == 0) {
+			name = selected.data;
+			len = selected.size;
+		}
+	}
+#elif defined(LWS_WITH_BEARSSL)
+	{
+		struct lws_tls_conn *conn = (struct lws_tls_conn *)wsi->tls.ssl;
+		name = (const unsigned char *)br_ssl_engine_get_selected_protocol(&conn->u.engine);
+		len = name ? (unsigned int)strlen((const char *)name) : 0;
+	}
+#else
 	SSL_get0_alpn_selected(wsi->tls.ssl, &name, &len);
+#endif
 	if (!len) {
 		lwsl_info("no ALPN upgrade\n");
 		return 0;
@@ -211,8 +294,8 @@ lws_tls_server_conn_alpn(struct lws *wsi)
 
 	return lws_role_call_alpn_negotiated(wsi, (const char *)cstr);
 #else
-	lwsl_err("%s: openssl too old\n", __func__);
-#endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
+	lwsl_err("%s: openssl/gnutls too old\n", __func__);
+#endif
 
 	return 0;
 }
@@ -319,12 +402,12 @@ bail:
  * set to the DER length.
  */
 
-int
+LWS_VISIBLE int
 lws_tls_alloc_pem_to_der_file(struct lws_context *context, const char *filename,
 			      const char *inbuf, lws_filepos_t inlen,
 			      uint8_t **buf, lws_filepos_t *amount)
 {
-	uint8_t *pem = NULL, *p, *end, *opem;
+	uint8_t *pem = NULL, *p, *end;
 	lws_filepos_t len;
 	uint8_t *q;
 	int n;
@@ -338,7 +421,10 @@ lws_tls_alloc_pem_to_der_file(struct lws_context *context, const char *filename,
 		len = inlen;
 	}
 
-	opem = p = pem;
+	if (len && pem[len - 1] == '\0')
+		len--;
+
+	p = pem;
 	end = p + len;
 
 	if (strncmp((char *)p, "-----", 5)) {
@@ -389,14 +475,13 @@ lws_tls_alloc_pem_to_der_file(struct lws_context *context, const char *filename,
 
 	p++;
 
-	/* trim the last line */
+	/* find the end of the base64 block */
 
-	q = (uint8_t *)end - 2;
+	q = p;
+	while (q < end && strncmp((const char *)q, "-----END", 8))
+		q++;
 
-	while (q > opem && *q != '\n')
-		q--;
-
-	if (*q != '\n')
+	if (q == end)
 		goto bail;
 
 	/* we can't write into the input buffer for mem, since it may be in RO
@@ -408,6 +493,9 @@ lws_tls_alloc_pem_to_der_file(struct lws_context *context, const char *filename,
 	n = lws_ptr_diff(q, p);
 	if (n == -1) /* coverity */
 		goto bail;
+
+    lwsl_info("%s: PEM payload len %d\n", __func__, n);
+    lwsl_hexdump_info(p, (size_t)n);
 
 	n = lws_b64_decode_string_len((char *)p, n,
 				      (char *)pem, (int)(long long)len);
@@ -536,4 +624,44 @@ lws_tls_use_any_upgrade_check_extant(const char *name)
 #endif
 #endif
 	return LWS_TLS_EXTANT_YES;
+}
+
+LWS_VISIBLE int
+lws_tls_cert_get_x509_remaining(struct lws_context *context, const char *filepath, int *days_left, int *total_days)
+{
+	struct lws_x509_cert *x = NULL;
+	union lws_tls_cert_info_results cri, cri1;
+	uint8_t *p;
+	lws_filepos_t amount;
+	int res = -1;
+
+	*days_left = 0;
+	*total_days = 0;
+
+	if (alloc_file(context, filepath, &p, &amount))
+		return 1;
+
+	p[amount] = '\0';
+
+	if (lws_x509_create(&x))
+		goto bail;
+
+	if (lws_x509_parse_from_pem(x, p, (size_t)amount))
+		goto bail_destroy;
+
+	if (!lws_x509_info(x, LWS_TLS_CERT_INFO_VALIDITY_FROM, &cri, 0) &&
+	    !lws_x509_info(x, LWS_TLS_CERT_INFO_VALIDITY_TO, &cri1, 0)) {
+		time_t now = time(NULL);
+
+		*days_left = (int)((cri1.time - now) / (24 * 3600));
+		*total_days = (int)((cri1.time - cri.time) / (24 * 3600));
+		res = 0;
+	}
+
+bail_destroy:
+	lws_x509_destroy(&x);
+bail:
+	lws_free(p);
+
+	return res;
 }

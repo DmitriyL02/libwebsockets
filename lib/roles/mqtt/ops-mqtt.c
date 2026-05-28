@@ -24,7 +24,7 @@
 
 #include "private-lib-core.h"
 
-static int
+static lws_handling_result_t
 rops_handle_POLLIN_mqtt(struct lws_context_per_thread *pt, struct lws *wsi,
 			   struct lws_pollfd *pollfd)
 {
@@ -135,7 +135,8 @@ read:
 			lwsl_info("%s: zero length read\n",
 				  __func__);
 			return LWS_HPI_RET_PLEASE_CLOSE_ME;
-		case LWS_SSL_CAPABLE_MORE_SERVICE:
+		case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
+		case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
 			lwsl_info("SSL Capable more service\n");
 			return LWS_HPI_RET_HANDLED;
 		case LWS_SSL_CAPABLE_ERROR:
@@ -170,7 +171,6 @@ drain:
 	}
 
 	ebuf.token = NULL;
-	ebuf.len = 0;
 
 	pending = (unsigned int)lws_ssl_pending(wsi);
 	if (pending) {
@@ -272,7 +272,7 @@ rops_client_bind_mqtt(struct lws *wsi, const struct lws_client_connect_info *i)
 	return 1; /* matched */
 }
 
-static int
+static lws_handling_result_t
 rops_handle_POLLOUT_mqtt(struct lws *wsi)
 {
 	struct lws **wsi2;
@@ -485,6 +485,17 @@ rops_close_role_mqtt(struct lws_context_per_thread *pt, struct lws *wsi)
 		s = s1;
 	}
 
+	/* clean up QoS2 rx list */
+	{
+		lws_mqtt_qos2_rx_t *rx;
+
+		lws_start_foreach_dll_safe(struct lws_dll2 *, p, tp, wsi->mqtt->qos2_rx_list.head) {
+			rx = lws_container_of(p, lws_mqtt_qos2_rx_t, list);
+			lws_dll2_remove(&rx->list);
+			lws_free(rx);
+		} lws_end_foreach_dll_safe(p, tp);
+	}
+
 	lws_mqtt_publish_param_t *pub =
 			(lws_mqtt_publish_param_t *)
 				wsi->mqtt->rx_cpkt_param;
@@ -516,7 +527,7 @@ rops_callback_on_writable_mqtt(struct lws *wsi)
 #endif
 	) {
 		lwsl_debug("already pending writable\n");
-		return 1;
+		// return 1;
 	}
 #if 0
 	/* is this for DATA or for control messages? */

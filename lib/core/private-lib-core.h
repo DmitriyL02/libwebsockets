@@ -1,7 +1,7 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2010 - 2019 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2025 Andy Green <andy@warmcat.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -27,6 +27,10 @@
 
 #include "lws_config.h"
 #include "lws_config_private.h"
+
+#if !defined(LHP_URL_LEN)
+#define LHP_URL_LEN			240
+#endif
 
 
 #if defined(LWS_WITH_CGI) && defined(LWS_HAVE_VFORK) && \
@@ -209,6 +213,7 @@ typedef struct lws_lifecycle {
 	lws_dll2_t			list; /* group list membership */
 	uint64_t			us_creation; /* creation timestamp */
 	lws_log_cx_t			*log_cx;
+	uint8_t				recycle_len;
 } lws_lifecycle_t;
 
 void
@@ -250,22 +255,9 @@ struct lws_tx_credit {
 
 #undef X509_NAME
 
-/*
- * All lws_tls...() functions must return this type, converting the
- * native backend result and doing the extra work to determine which one
- * as needed.
- *
- * Native TLS backend return codes are NOT ALLOWED outside the backend.
- *
- * Non-SSL mode also uses these types.
- */
-enum lws_ssl_capable_status {
-	LWS_SSL_CAPABLE_ERROR			= -1, /* it failed */
-	LWS_SSL_CAPABLE_DONE			= 0,  /* it succeeded */
-	LWS_SSL_CAPABLE_MORE_SERVICE_READ	= -2, /* retry WANT_READ */
-	LWS_SSL_CAPABLE_MORE_SERVICE_WRITE	= -3, /* retry WANT_WRITE */
-	LWS_SSL_CAPABLE_MORE_SERVICE		= -4, /* general retry */
-};
+ /*
+  * the rest is managed per-context, that includes
+  */
 
 enum lws_context_destroy {
 	LWSCD_NO_DESTROY,		/* running */
@@ -321,7 +313,9 @@ struct lws_ring {
 struct lws_protocols;
 struct lws;
 
+#if defined(LWS_WITH_SECURE_STREAMS)
 #include "private-lib-secure-streams.h"
+#endif
 
 #if defined(LWS_WITH_NETWORK) /* network */
 #include "private-lib-event-libs.h"
@@ -432,6 +426,16 @@ typedef struct lws_ss_sinks {
 } lws_ss_sinks_t;
 #endif
 
+typedef struct lws_buflist {
+	struct lws_buflist			*next;
+	size_t					len;
+	size_t					pos;
+	unsigned char				awaiting_eom;
+	unsigned char				src_channel;
+	void					*heap_alloc;
+} lws_buflist_t;
+
+
 /*
  * the rest is managed per-context, that includes
  *
@@ -444,7 +448,7 @@ struct lws_context {
 	char canonical_hostname[96];
  #endif
 #if defined(LWS_HAVE_SSL_CTX_set_keylog_callback) && \
-	defined(LWS_WITH_TLS) && defined(LWS_WITH_CLIENT)
+	defined(LWS_WITH_TLS) && (defined(LWS_WITH_CLIENT) || defined(LWS_WITH_SERVER))
 	char					keylog_file[96];
 #endif
 
@@ -482,6 +486,9 @@ struct lws_context {
 	lws_lifecycle_group_t			lcg[LWSLCG_COUNT];
 
 	const struct lws_protocols		*protocols_copy;
+#if defined(LWS_ROLE_WS)
+        const struct lws_extension		*extensions;
+#endif
 
 #if defined(LWS_WITH_NETLINK)
 	lws_sorted_usec_list_t			sul_nl_coldplug;
@@ -567,6 +574,9 @@ struct lws_context {
 	lws_async_dns_t			async_dns;
 #endif
 
+	lws_sockaddr46			ext_ipv4;
+	lws_sockaddr46			ext_ipv6;
+
 #if defined(LWS_WITH_SYS_FAULT_INJECTION)
 	lws_fi_ctx_t			fic;
 	/**< Toplevel Fault Injection ctx */
@@ -635,6 +645,9 @@ struct lws_context {
 	lws_ss_handle_t			* ota_ss;	/* opaque to platform */
 #endif
 
+	const char			*wol_if;
+	const char			*lws_stub;
+
 /*
  * <====== LWS_WITH_NETWORK end
  */
@@ -652,7 +665,19 @@ struct lws_context {
 	lws_txp_path_client_t			txp_cpath;
 
 	const void				*txp_ssproxy_info;
+#endif
 
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL)
+	int					argc;
+	const char				**argv;
+
+	int					stdin_argc;
+	const char				*stdin_argv[16];
+
+	struct lws_buflist			*stdin_buflist;
+	char					*stdin_linear;
+	size_t					stdin_linear_size;
+	unsigned int				stdin_flags;
 #endif
 
 #if defined(LWS_WITH_FILE_OPS)
@@ -671,6 +696,16 @@ struct lws_context {
 
 #if defined(LWS_WITH_THREADPOOL) && defined(LWS_HAVE_PTHREAD_H)
 	struct lws_threadpool *tp_list_head;
+#endif
+
+#if defined(LWS_WITH_ASYNC_QUEUE)
+	lws_dll2_owner_t	async_worker_waiting;
+	lws_dll2_owner_t	async_worker_finished;
+	pthread_mutex_t		async_worker_mutex;
+	pthread_cond_t		async_worker_cond;
+	uint8_t			async_worker_threads_active;
+	uint8_t			async_worker_threads_idle;
+	uint8_t			count_async_threads;
 #endif
 
 #if defined(LWS_WITH_PEER_LIMITS)
@@ -838,12 +873,6 @@ signed char char_to_hex(const char c);
 int
 lws_system_do_attach(struct lws_context_per_thread *pt);
 #endif
-
-struct lws_buflist {
-	struct lws_buflist *next;
-	size_t len;
-	size_t pos;
-};
 
 char *
 lws_strdup(const char *s);
@@ -1016,6 +1045,7 @@ void lwsl_emit_stderr(int level, const char *line);
  #define lws_ssl_close(_a) (0)
  #define lws_ssl_context_destroy(_a)
  #define lws_ssl_SSL_CTX_destroy(_a)
+ #define lws_tls_ctx_ref_destroy_all(_a)
  #define lws_ssl_remove_wsi_from_buffered_list(_a)
  #define __lws_ssl_remove_wsi_from_buffered_list(_a)
  #define lws_context_init_ssl_library(_a, _b)
@@ -1026,7 +1056,7 @@ void lwsl_emit_stderr(int level, const char *line);
 
 
 
-#if LWS_MAX_SMP > 1
+#if defined(LWS_WITH_NETWORK) && LWS_MAX_SMP > 1
 #define lws_context_lock(c, reason) lws_mutex_refcount_lock(&c->mr, reason)
 #define lws_context_unlock(c) lws_mutex_refcount_unlock(&c->mr)
 #define lws_context_assert_lock_held(c) lws_mutex_refcount_assert_held(&c->mr)
@@ -1184,6 +1214,21 @@ lws_transport_mux_next_free(lws_transport_mux_t *tm, lws_mux_ch_idx_t *result);
 
 void
 sul_ping_cb(lws_sorted_usec_list_t *sul);
+
+/* Added Declaration of this function to make common for openssl-server */
+#if defined(LWS_HAVE_SSL_CTX_set_keylog_callback) && \
+	defined(LWS_WITH_TLS)
+void
+lws_klog_dump(const SSL *ssl, const char *line);
+#endif
+
+struct lws_plugin *
+lws_plugin_alloc(struct lws_plugin **pplugin);
+
+int
+lws_plugins_handle_builtin(struct lws_plugin **pplugin,
+			   each_plugin_cb_t each, void *each_user);
+
 
 #if !defined(PRIu64)
 #define PRIu64 "llu"

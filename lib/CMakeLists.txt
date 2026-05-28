@@ -29,7 +29,10 @@ macro(add_subdir_include_dirs arg1)
 	list(APPEND LWS_LIB_BUILD_INC_PATHS ${_CMAKE_INC_LIST}) 
 endmacro()
 
+
+
 set(LWS_LIB_INCLUDES "")
+set(LWS_LIB_BUILD_INC_PATHS_TEMP "")
 
 #
 # Plat specific build items
@@ -135,34 +138,107 @@ configure_file(
        "${PROJECT_SOURCE_DIR}/cmake/lws_config_private.h.in"
        "${PROJECT_BINARY_DIR}/lws_config_private.h")
 
-add_subdir_include_dirs(core)
-add_subdir_include_dirs(misc)
-add_subdir_include_dirs(system)
+list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/core)
+list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/misc)
+list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/system)
+list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/media)
+add_subdirectory(core)
+add_subdirectory(misc)
+if (LWS_WITH_TRANSCODE)
+	set_source_files_properties(media/transcode/transcode.c PROPERTIES COMPILE_FLAGS "-Wno-conversion -Wno-sign-conversion")
+endif()
+
+if (LWS_WITH_V4L2)
+	set_source_files_properties(media/v4l2/v4l2.c PROPERTIES COMPILE_FLAGS "-Wno-unused-variable")
+endif()
+
+add_subdirectory(system)
 
 if (LWS_WITH_DRIVERS)
-	add_subdir_include_dirs(drivers)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/drivers)
+	add_subdirectory(drivers)
 endif()
 
 if (LWS_WITH_NETWORK)
-	add_subdir_include_dirs(core-net)
-	add_subdir_include_dirs(roles)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/core-net)
+	add_subdirectory(core-net)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles)
+	add_subdirectory(roles)
 endif()
 
 if (LWS_WITH_JOSE)
-	add_subdir_include_dirs(jose)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/jose ${CMAKE_CURRENT_SOURCE_DIR}/jose/jwe)
+	add_subdirectory(jose)
 endif()
 
 if (LWS_WITH_COSE)
-	add_subdir_include_dirs(cose)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/cose)
+	add_subdirectory(cose)
 endif()
 
+if (LWS_ROLE_MQTT)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/mqtt)
+endif()
+
+if (LWS_ROLE_DBUS AND NOT LWS_PLAT_FREERTOS)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/dbus)
+endif()
+
+if (LWS_ROLE_H1 OR LWS_ROLE_H2)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/http)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/http/compression)
+endif()
+
+if (LWS_ROLE_H1)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/h1)
+endif()
+
+if (LWS_ROLE_H2)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/h2)
+endif()
+
+if (LWS_ROLE_WS)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/ws)
+endif()
+
+if (LWS_ROLE_RAW)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/raw-skt)
+endif()
+
+if (LWS_ROLE_RAW_FILE)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/raw-file)
+endif()
+
+if (LWS_WITH_CGI)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/cgi)
+endif()
+
+if (LWS_ROLE_RAW_PROXY)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/raw-proxy)
+endif()
+
+if (NOT LWS_WITHOUT_SERVER OR LWS_WITH_SECURE_STREAMS_PROCESS_API)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/roles/listen)
+endif()
+
+if (LWS_WITH_SECURE_STREAMS)
 include_directories(secure-streams)
+endif()
+
+list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP "${CMAKE_CURRENT_SOURCE_DIR}/../core")
+
+
 add_subdir_include_dirs(event-libs)
 
 if (LWS_WITH_SECURE_STREAMS)
-	add_subdir_include_dirs(secure-streams)
+	list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/secure-streams)
+	add_subdirectory(secure-streams)
 endif()
-add_subdir_include_dirs(secure-streams/serialized/client)
+
+list(APPEND LWS_LIB_BUILD_INC_PATHS_TEMP ${CMAKE_CURRENT_SOURCE_DIR}/secure-streams/serialized/client)
+add_subdirectory(secure-streams/serialized/client)
+
+add_subdirectory(media)
 
 if (LWS_WITH_STATIC)
     if (LWS_STATIC_PIC)
@@ -177,9 +253,11 @@ if (LWS_WITH_STATIC)
 		$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
 		$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/../include>
 	)
-	target_include_directories(websockets PRIVATE ${LWS_LIB_BUILD_INC_PATHS})
+	target_include_directories(websockets PRIVATE ${LWS_LIB_BUILD_INC_PATHS} ${LWS_LIB_BUILD_INC_PATHS_TEMP} ${CMAKE_CURRENT_SOURCE_DIR}/../core)
 	target_compile_definitions(websockets PRIVATE LWS_BUILDING_STATIC)
-	target_include_directories(websockets PUBLIC ${LWS_PUBLIC_INCLUDES})
+	foreach(inc ${LWS_PUBLIC_INCLUDES})
+		target_include_directories(websockets PUBLIC "$<BUILD_INTERFACE:${inc}>" "$<INSTALL_INTERFACE:${inc}>")
+	endforeach()
 	set(LWS_PUBLIC_INCLUDES ${LWS_PUBLIC_INCLUDES} PARENT_SCOPE)
 
 	if (WIN32)
@@ -205,9 +283,11 @@ if (LWS_WITH_SHARED)
 		$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
 		$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/../include>
 	)
-	target_include_directories(websockets_shared PRIVATE ${LWS_LIB_BUILD_INC_PATHS})
+	target_include_directories(websockets_shared PRIVATE ${LWS_LIB_BUILD_INC_PATHS} ${LWS_LIB_BUILD_INC_PATHS_TEMP} ${CMAKE_CURRENT_SOURCE_DIR}/../core)
 	target_compile_definitions(websockets_shared PRIVATE LWS_BUILDING_SHARED)
-	target_include_directories(websockets_shared PUBLIC ${LWS_PUBLIC_INCLUDES})
+	foreach(inc ${LWS_PUBLIC_INCLUDES})
+		target_include_directories(websockets_shared PUBLIC "$<BUILD_INTERFACE:${inc}>" "$<INSTALL_INTERFACE:${inc}>")
+	endforeach()
 	set(LWS_PUBLIC_INCLUDES ${LWS_PUBLIC_INCLUDES} PARENT_SCOPE)
 
 	# We want the shared lib to be named "libwebsockets"
@@ -220,9 +300,10 @@ if (LWS_WITH_SHARED)
 		# Compile as DLL (export function declarations)
 		set_property(
 			TARGET websockets_shared
-			PROPERTY COMPILE_DEFINITIONS
+			APPEND PROPERTY COMPILE_DEFINITIONS
 			LWS_DLL
 			LWS_INTERNAL)
+		target_compile_definitions(websockets_shared INTERFACE LWS_DLL)
 	endif()
 
 	if (APPLE)
@@ -235,8 +316,9 @@ if (LWS_WITH_SHARED)
 		   (${CMAKE_SYSTEM_NAME} MATCHES "OpenBSD") OR
 		   (${CMAKE_SYSTEM_NAME} MATCHES "QNX")))
 		   if (LWS_WITH_SHARED)
-				target_link_libraries(websockets_shared dl)
-			endif()
+			   # target_link_libraries(websockets_shared)
+			   list(APPEND LIB_LIST dl)
+		   endif()
 		endif()
 	endif()
 
@@ -267,8 +349,29 @@ endif()
 
 
 # Setup the linking for all libs.
+list(APPEND LIB_LIST ${LIB_LIST_AT_END})
+set(STRIPPED_LIB_LIST "")
+foreach(lib_path IN LISTS LIB_LIST)
+	if(IS_ABSOLUTE "${lib_path}" AND NOT "${lib_path}" MATCHES "^-")
+		get_filename_component(lib_name "${lib_path}" NAME)
+		string(REGEX REPLACE "^lib" "" lib_name "${lib_name}")
+		string(REGEX REPLACE "\\.so.*$" "" lib_name "${lib_name}")
+		string(REGEX REPLACE "\\.dylib.*$" "" lib_name "${lib_name}")
+		string(REGEX REPLACE "\\.a$" "" lib_name "${lib_name}")
+		if (APPLE)
+			list(APPEND STRIPPED_LIB_LIST "${lib_path}")
+		else()
+			list(APPEND STRIPPED_LIB_LIST "$<BUILD_INTERFACE:${lib_path}>$<INSTALL_INTERFACE:-l${lib_name}>")
+		endif()
+	else()
+		list(APPEND STRIPPED_LIB_LIST "${lib_path}")
+	endif()
+endforeach()
+
 foreach (lib ${LWS_LIBRARIES})
-	target_link_libraries(${lib} ${LIB_LIST})
+	#	target_link_libraries(${lib} PRIVATE ${LIB_LIST})
+	target_link_libraries(${lib} ${STRIPPED_LIB_LIST})
+
 endforeach()
 
 #
@@ -286,8 +389,8 @@ endif()
 # Install libs and headers.
 install(TARGETS ${LWS_LIBRARIES}
 		EXPORT LibwebsocketsTargets
-		LIBRARY DESTINATION "${LWS_INSTALL_LIB_DIR}${LIB_SUFFIX}" COMPONENT core
-		ARCHIVE DESTINATION "${LWS_INSTALL_LIB_DIR}${LIB_SUFFIX}" COMPONENT core
+		LIBRARY DESTINATION "${LWS_INSTALL_LIB_DIR}" COMPONENT core
+		ARCHIVE DESTINATION "${LWS_INSTALL_LIB_DIR}" COMPONENT core
 		RUNTIME DESTINATION "${LWS_INSTALL_BIN_DIR}" COMPONENT core # Windows DLLs
 		PUBLIC_HEADER DESTINATION "${LWS_INSTALL_INCLUDE_DIR}" COMPONENT dev)
 		
@@ -307,6 +410,13 @@ if (LWS_HAVE_LIBCAP)
 		set(lws_requires "libcap")
 	endif()
 endif()
+if (LWS_HAVE_SYSTEMD_H)
+	if (NOT lws_requires STREQUAL "")
+		set(lws_requires "${lws_requires},libsystemd")
+	else()
+		set(lws_requires "libsystemd")
+	endif()
+endif()
 
 
 # Generate and install pkgconfig.
@@ -314,8 +424,8 @@ endif()
 file(WRITE "${PROJECT_BINARY_DIR}/libwebsockets.pc"
 "prefix=\"${CMAKE_INSTALL_PREFIX}\"
 exec_prefix=\${prefix}
-libdir=\${exec_prefix}/lib${LIB_SUFFIX}
-includedir=\${prefix}/include
+libdir=\${exec_prefix}/${LWS_INSTALL_LIB_DIR}
+includedir=\${prefix}/${LWS_INSTALL_INCLUDE_DIR}
 
 Name: libwebsockets
 Description: Websockets server and client library
@@ -331,13 +441,13 @@ endif()
 
 
 	install(FILES "${PROJECT_BINARY_DIR}/libwebsockets.pc"
-		DESTINATION lib${LIB_SUFFIX}/pkgconfig)
+		DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
 file(WRITE "${PROJECT_BINARY_DIR}/libwebsockets_static.pc"
 "prefix=\"${CMAKE_INSTALL_PREFIX}\"
 exec_prefix=\${prefix}
-libdir=\${exec_prefix}/lib${LIB_SUFFIX}
-includedir=\${prefix}/include
+libdir=\${exec_prefix}/${LWS_INSTALL_LIB_DIR}
+includedir=\${prefix}/${LWS_INSTALL_INCLUDE_DIR}
 
 Name: libwebsockets_static
 Description: Websockets server and client static library
@@ -355,13 +465,15 @@ endif()
 
 
 	install(FILES "${PROJECT_BINARY_DIR}/libwebsockets_static.pc"
-		DESTINATION lib${LIB_SUFFIX}/pkgconfig)
+		DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
 endif(UNIX OR MINGW)
 
 
 # Keep explicit parent scope exports at end
 #
+
+set(LWS_LIB_BUILD_INC_PATHS ${LWS_LIB_BUILD_INC_PATHS} ${LWS_LIB_BUILD_INC_PATHS_TEMP} PARENT_SCOPE)
 
 export_to_parent_intermediate()
 if (DEFINED LWS_PLAT_UNIX)
@@ -371,6 +483,8 @@ if (DEFINED LWS_PLAT_UNIX)
 	endif()
 endif()
 set(LWS_HAVE_MBEDTLS_NET_SOCKETS ${LWS_HAVE_MBEDTLS_NET_SOCKETS} PARENT_SCOPE)
+set(LWS_HAVE_MBEDTLS_SSL_NEW_SESSION_TICKET ${LWS_HAVE_MBEDTLS_SSL_NEW_SESSION_TICKET} PARENT_SCOPE)
+set(LWS_HAVE_mbedtls_ssl_conf_alpn_protocols ${LWS_HAVE_mbedtls_ssl_conf_alpn_protocols} PARENT_SCOPE)
 set(TEST_SERVER_SSL_KEY "${TEST_SERVER_SSL_KEY}" PARENT_SCOPE)
 set(TEST_SERVER_SSL_CERT "${TEST_SERVER_SSL_CERT}" PARENT_SCOPE)
 set(TEST_SERVER_DATA ${TEST_SERVER_DATA} PARENT_SCOPE)

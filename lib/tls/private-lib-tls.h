@@ -32,6 +32,12 @@
 
 #include "private-jit-trust.h"
 
+#if defined(WIN32) && defined(LWS_WITH_SCHANNEL)
+ #include <wincrypt.h>
+ #include <bcrypt.h>
+ #include <ncrypt.h>
+#else
+
 #if defined(USE_WOLFSSL)
  #if defined(USE_OLD_CYASSL)
   #if defined(_WIN32)
@@ -80,6 +86,10 @@
   #else
    #include "openssl/ssl.h" /* wrapper !!!! */
   #endif
+  #elif defined(LWS_WITH_GNUTLS)
+   #include <gnutls/gnutls.h>
+   #include <gnutls/abstract.h>
+   #include <gnutls/crypto.h>
   #else
    #include <openssl/ssl.h>
    #include <openssl/evp.h>
@@ -110,6 +120,8 @@
  #endif /* not ESP32 */
 #endif /* not USE_WOLFSSL */
 
+#endif /* !LWS_WITH_SCHANNEL */
+
 #endif /* LWS_WITH_TLS */
 
 enum lws_tls_extant {
@@ -121,7 +133,7 @@ enum lws_tls_extant {
 #if defined(LWS_WITH_TLS)
 
 #if defined(LWS_WITH_TLS_SESSIONS) && defined(LWS_WITH_CLIENT) && \
-	(defined(LWS_WITH_MBEDTLS) || defined(OPENSSL_IS_BORINGSSL))
+	(defined(LWS_WITH_MBEDTLS) || defined(OPENSSL_IS_BORINGSSL)) || defined(OPENSSL_IS_AWSLC)
 #define LWS_TLS_SYNTHESIZE_CB 1
 #endif
 
@@ -134,13 +146,55 @@ lws_tls_restrict_return(struct lws *wsi);
 void
 lws_tls_restrict_return_handshake(struct lws *wsi);
 
+void
+lws_tls_restrict_return(struct lws *wsi);
+
+void
+lws_tls_restrict_return_handshake(struct lws *wsi);
+
+#if defined(LWS_WITH_SCHANNEL)
+struct lws_tls_schannel_conn;
+struct lws_tls_schannel_ctx;
+struct lws_tls_schannel_bio;
+struct lws_tls_schannel_x509;
+typedef struct lws_tls_schannel_conn lws_tls_conn;
+typedef struct lws_tls_schannel_ctx lws_tls_ctx;
+typedef struct lws_tls_schannel_bio lws_tls_bio;
+typedef struct lws_tls_schannel_x509 lws_tls_x509;
+#elif defined(LWS_WITH_GNUTLS)
+#include "gnutls/private.h"
+#elif defined(LWS_WITH_BEARSSL)
+#include "bearssl/private-lib-tls-bearssl.h"
+#else
 typedef SSL lws_tls_conn;
 typedef SSL_CTX lws_tls_ctx;
 typedef BIO lws_tls_bio;
 typedef X509 lws_tls_x509;
+#endif
 
 #if defined(LWS_WITH_NETWORK)
 #include "private-network.h"
+#endif
+
+#if defined(LWS_ROLE_QUIC) && defined(LWS_WITH_TLS) && !defined(LWS_WITH_MBEDTLS) && !defined(LWS_WITH_WOLFSSL) && !defined(LWS_WITH_SCHANNEL) && !defined(LWS_WITH_GNUTLS) && !defined(LWS_WITH_BEARSSL)
+int
+lws_tls_quic_vhost_init(lws_tls_ctx *ctx);
+#endif
+
+#if defined(LWS_ROLE_QUIC) && defined(LWS_WITH_TLS)
+/*
+ * Feed parsed QUIC CRYPTO frame data into the active TLS backend
+ * (e.g., via OpenSSL SSL_provide_quic_data)
+ */
+int
+lws_tls_quic_rx_crypto(struct lws *wsi, int level, const uint8_t *buf, size_t len);
+
+/*
+ * Callback from the TLS backend when it has generated outbound CRYPTO data
+ * (e.g., ServerHello). LWS wraps this in a tx_frame and queues it to pending_tx.
+ */
+int
+lws_tls_quic_tx_crypto_cb(struct lws *wsi, int level, const uint8_t *buf, size_t len);
 #endif
 
 int
@@ -150,7 +204,8 @@ void
 lws_context_deinit_ssl_library(struct lws_context *context);
 #define LWS_SSL_ENABLED(vh) (vh && vh->tls.use_ssl)
 
-extern const struct lws_tls_ops tls_ops_openssl, tls_ops_mbedtls;
+extern const struct lws_tls_ops tls_ops_openssl, tls_ops_mbedtls, tls_ops_schannel,
+				 tls_ops_gnutls, tls_ops_bearssl;
 
 struct lws_ec_valid_curves {
 	int id;
@@ -169,6 +224,9 @@ lws_tls_openssl_cert_info(X509 *x509, enum lws_tls_cert_info type,
 			  union lws_tls_cert_info_results *buf, size_t len);
 int
 lws_tls_check_all_cert_lifetimes(struct lws_context *context);
+
+LWS_VISIBLE int
+lws_tls_cert_get_x509_remaining(struct lws_context *context, const char *filepath, int *days_left, int *total_days);
 
 int
 lws_tls_alloc_pem_to_der_file(struct lws_context *context, const char *filename,
@@ -198,7 +256,12 @@ int
 lws_genec_confirm_curve_allowed_by_tls_id(const char *allowed, int id,
 					  struct lws_jwk *jwk);
 
-void
+#if defined(LWS_WITH_GNUTLS)
+int
+lws_tls_session_new_gnutls(struct lws *wsi);
+#endif
+
+int
 lws_tls_reuse_session(struct lws *wsi);
 
 void

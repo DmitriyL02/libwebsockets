@@ -16,6 +16,17 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_D,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 #include <time.h>
@@ -25,47 +36,23 @@ static int interrupted;
 /* override the default mount for /secret in the URL space */
 
 static const struct lws_http_mount mount_secret = {
-	/* .mount_next */		NULL,		/* linked-list "next" */
-	/* .mountpoint */		"/secret",	/* mountpoint URL */
-	/* .origin */			"./mount-secret-origin",
-	/* .def */			"index.html",
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_FILE, /* dynamic */
-	/* .mountpoint_len */		7,		/* char count */
-	/* .basic_auth_login_file */	"./ba-passwords",
+	.mountpoint		= "/secret",	/* mountpoint URL */
+	.origin			= "./mount-secret-origin",
+	.def			= "index.html",
+	.origin_protocol	= LWSMPRO_FILE, /* dynamic */
+	.mountpoint_len		= 7,		/* char count */
+	.basic_auth_login_file	= "./ba-passwords",
 };
 
 /* default mount serves the URL space from ./mount-origin */
 
 static const struct lws_http_mount mount = {
-	/* .mount_next */		&mount_secret,	/* linked-list "next" */
-	/* .mountpoint */		"/",		/* mountpoint URL */
-	/* .origin */			"./mount-origin", /* serve from dir */
-	/* .def */			"index.html",	/* default filename */
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
-	/* .mountpoint_len */		1,		/* char count */
-	/* .basic_auth_login_file */	NULL,
+	.mount_next		= &mount_secret,	/* linked-list "next" */
+	.mountpoint		= "/",			/* mountpoint URL */
+	.origin			= "./mount-origin", 	/* serve from dir */
+	.def			= "index.html",		/* default filename */
+	.origin_protocol	= LWSMPRO_FILE,		/* files in a dir */
+	.mountpoint_len		= 1,			/* char count */
 };
 
 void sigint_handler(int sig)
@@ -85,10 +72,17 @@ int main(int argc, const char **argv)
 			/* | LLL_INFO */ /* | LLL_PARSER */ /* | LLL_HEADER */
 			/* | LLL_EXT */ /* | LLL_CLIENT */ /* | LLL_LATENCY */
 			/* | LLL_DEBUG */;
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 
 	signal(SIGINT, sigint_handler);
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);

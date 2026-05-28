@@ -14,6 +14,21 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_D,
+	LWS_SW_F,
+	LWS_SW_S,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_F]	= { "-f",              "Enable -f feature" },
+	[LWS_SW_S]	= { "-s",              "Use TLS / https" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <stdio.h>
 
@@ -339,14 +354,21 @@ int main(int argc, const char **argv)
 			/* | LLL_DEBUG */;
 	int fail = 0, ok = 0, flags = 0;
 	char dotstar[512];
+	(void)switches;
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
+
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
 	lwsl_user("LWS API selftest: lws_tokenize\n");
 
-	if ((p = lws_cmdline_option(argc, argv, "-f")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_F].sw)))
 		flags = atoi(p);
 
 
@@ -382,6 +404,17 @@ int main(int argc, const char **argv)
 		memcert[info.client_ssl_ca_mem_len++] = '\0';
 	}
 #endif
+
+	{
+		const char * match, *argv1[] = { "arg0", "--arg1", "arg2", "-arg3", "arg4", NULL };
+
+		match = lws_cmdline_options(LWS_ARRAY_SIZE(argv1) - 1, argv1, NULL, NULL);
+		if (!match || strcmp(match, "arg2")) {
+			lwsl_warn("%s: test1 result unexpected: '%s'\n", __func__, match);
+			fail++;
+		}
+	}
+
 	{
 		/* lws_fx_t */
 
@@ -776,6 +809,62 @@ int main(int argc, const char **argv)
 		}
 	}
 
+	/* sanity check base64 decode */
+
+	{
+		struct lws_b64state b64;
+		uint8_t result[16];
+		size_t in_len, out_len;
+
+		lws_b64_decode_state_init(&b64);
+		in_len = 8;
+		out_len = sizeof(result);
+		if (lws_b64_decode_stateful(&b64, "YWJjZA==", &in_len, result, &out_len, 1)) {
+			lwsl_err("%s: b64 test 1 decode failed\n", __func__);
+			return 1;
+		}
+		if (out_len != 4) {
+			lwsl_err("%s: b64 test 1 decode len not 4 (%d)\n", __func__, (int)out_len);
+			return 1;
+		}
+		if (memcmp(result, "abcd", out_len)) {
+			lwsl_err("%s: b64 test 1 decode value not 'abcde' (%.*s)\n", __func__, (int)out_len, result);
+			return 1;
+		}
+
+		lws_b64_decode_state_init(&b64);
+		in_len = 8;
+		out_len = sizeof(result);
+		if (lws_b64_decode_stateful(&b64, "YWJjZGU=", &in_len, result, &out_len, 1)) {
+			lwsl_err("%s: b64 test 2 decode failed\n", __func__);
+			return 1;
+		}
+		if (out_len != 5) {
+			lwsl_err("%s: b64 test 2 decode len not 5 (%d)\n", __func__, (int)out_len);
+			return 1;
+		}
+		if (memcmp(result, "abcde", out_len)) {
+			lwsl_err("%s: b64 test 2 decode value not 'abcd' (%.*s)\n", __func__, (int)out_len, result);
+			return 1;
+		}
+
+		lws_b64_decode_state_init(&b64);
+		in_len = 8;
+		out_len = sizeof(result);
+		if (lws_b64_decode_stateful(&b64, "YWJjZGVm", &in_len, result, &out_len, 1)) {
+			lwsl_err("%s: b64 test 3 decode failed\n", __func__);
+			return 1;
+		}
+		if (out_len != 6) {
+			lwsl_err("%s: b64 test 3 decode len not 6 (%d)\n", __func__, (int)out_len);
+			return 1;
+		}
+		if (memcmp(result, "abcdef", out_len)) {
+			lwsl_err("%s: b64 test 3 decode value not 'abcde' (%.*s)\n", __func__, (int)out_len, result);
+			return 1;
+		}
+	}
+
 	/* sanity check lws_strnncpy() */
 
 	lws_strnncpy(dotstar, "12345678", 4, sizeof(dotstar));
@@ -859,7 +948,61 @@ int main(int argc, const char **argv)
 		}
 	}
 
-	p = lws_cmdline_option(argc, argv, "-s");
+	/* sanity check lws_parse_uri_create() */
+
+	{
+		struct {
+			const char *uri;
+			const char *scheme;
+			const char *host;
+			const char *path;
+			uint16_t port;
+			char unix_skt;
+		} parse_tests[] = {
+			{ "wss://host.com?key=val", "wss", "host.com", "?key=val", 443, 0 },
+			{ "wss://[::1]:8080/path/to?query=1", "wss", "::1", "path/to?query=1", 8080, 0 },
+			{ "host.com?key=val", "", "host.com", "?key=val", 0, 0 },
+			{ "http://+/var/run/mysocket:/my/path", "http", "+/var/run/mysocket", "my/path", 0, 1 },
+			{ "http://host.com", "http", "host.com", "/", 80, 0 },
+		};
+		int t;
+
+		for (t = 0; t < (int)LWS_ARRAY_SIZE(parse_tests); t++) {
+			lws_parse_uri_t *u = lws_parse_uri_create(parse_tests[t].uri);
+			if (!u) {
+				lwsl_err("%s: lws_parse_uri_create test %d failed to alloc\n", __func__, t);
+				fail++;
+				continue;
+			}
+			if (strcmp(u->scheme, parse_tests[t].scheme)) {
+				lwsl_err("%s: test %d: scheme mismatch exp '%s' got '%s'\n", __func__, t, parse_tests[t].scheme, u->scheme);
+				fail++;
+			}
+			if (strcmp(u->host, parse_tests[t].host)) {
+				lwsl_err("%s: test %d: host mismatch exp '%s' got '%s'\n", __func__, t, parse_tests[t].host, u->host);
+				fail++;
+			}
+			if (strcmp(u->path, parse_tests[t].path)) {
+				lwsl_err("%s: test %d: path mismatch exp '%s' got '%s'\n", __func__, t, parse_tests[t].path, u->path);
+				fail++;
+			}
+			if (u->port != parse_tests[t].port) {
+				lwsl_err("%s: test %d: port mismatch exp '%d' got '%d'\n", __func__, t, parse_tests[t].port, u->port);
+				fail++;
+			}
+			if (u->unix_skt != parse_tests[t].unix_skt) {
+				lwsl_err("%s: test %d: unix_skt mismatch exp '%d' got '%d'\n", __func__, t, parse_tests[t].unix_skt, u->unix_skt);
+				fail++;
+			}
+			lws_parse_uri_destroy(&u);
+            if (u != NULL) {
+                lwsl_err("%s: lws_parse_uri_destroy didn't set to NULL\n", __func__);
+                fail++;
+            }
+		}
+	}
+
+	p = lws_cmdline_option(argc, argv, switches[LWS_SW_S].sw);
 
 	for (n = 0; n < (int)LWS_ARRAY_SIZE(tests); n++) {
 		int m = 0, in_fail = fail;
@@ -1028,7 +1171,7 @@ int main(int argc, const char **argv)
 			fail++;
 		}
 		m = lws_humanize(buf, sizeof(buf), 1024, humanize_schema_si);
-		if (m != 7 || strcmp(buf, "1.000Ki")) {
+		if (m != 3 || strcmp(buf, "1Ki")) {
 			lwsl_user("%s: humanize 5 fail '%s' (%d)\n", __func__, buf, m);
 			fail++;
 		}

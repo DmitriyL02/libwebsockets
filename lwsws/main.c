@@ -1,7 +1,7 @@
 /*
  * libwebsockets web server application
  *
- * Written in 2010-2020 by Andy Green <andy@warmcat.com>
+ * Written in 2010-2026 by Andy Green <andy@warmcat.com>
  *
  * This file is made available under the Creative Commons CC0 1.0
  * Universal Public Domain Dedication.
@@ -35,6 +35,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#if defined(__linux__) || defined(__APPLE__)
+#include <execinfo.h>
+#endif
 #else
 #include <io.h>
 #include "gettimeofday.h"
@@ -60,7 +63,7 @@ static lws_sorted_usec_list_t sul_lwsws;
 static char config_dir[128], default_plugin_path = 1;
 static int opts = 0, do_reload = 1;
 static uv_loop_t loop;
-static uv_signal_t signal_outer[2];
+static uv_signal_t signal_outer[3];
 static int pids[32];
 void lwsl_emit_stderr(int level, const char *line);
 
@@ -79,7 +82,7 @@ static const struct lws_extension exts[] = {
 
 #if defined(LWS_WITH_PLUGINS)
 static const char * const plugin_dirs[] = {
-	INSTALL_DATADIR"/libwebsockets-test-server/plugins/",
+	LWS_PLUGIN_DIR "/",
 	NULL
 };
 #endif
@@ -132,7 +135,7 @@ lwsws_min(lws_sorted_usec_list_t *sul)
 }
 
 static int
-context_creation(void)
+context_creation(int argc, const char **argv)
 {
 	int cs_len = LWSWS_CONFIG_STRING_SIZE - 1;
 	struct lws_context_creation_info info;
@@ -165,9 +168,24 @@ context_creation(void)
 	if (lwsws_get_config_globals(&info, config_dir, &cs, &cs_len))
 		goto init_failed;
 
+	const char *stub = lws_cmdline_option(argc, argv, "--lws-stub");
+	if (lws_cmdline_option(argc, argv, "--lws-dht-dnssec-monitor-root") || stub) {
+		const char *p;
+		if ((p = lws_cmdline_option(argc, argv, "--uid")))
+			info.uid = (unsigned int)atoi(p);
+		if ((p = lws_cmdline_option(argc, argv, "--gid")))
+			info.gid = (unsigned int)atoi(p);
+		
+		info.lws_stub = stub ? stub : "dnssec-monitor";
+		/* Root monitor / stubs make outbound TLS probes but skip user vhosts, force global TLS init */
+		info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT | LWS_SERVER_OPTION_VH_SKIP_PRIV_DROP;
+	}
+
 	foreign_loops[0] = &loop;
 	info.foreign_loops = foreign_loops;
 	info.pcontext = &context;
+	info.argc = argc;
+	info.argv = argv;
 
 	context = lws_create_context(&info);
 	if (context == NULL) {
@@ -195,6 +213,34 @@ init_failed:
 	return 1;
 }
 
+
+/*
+ * root-level sighup handler
+ */
+
+#if defined(__linux__) || defined(__APPLE__)
+static void
+crash_handler(int signum)
+{
+	void *array[20];
+	int size;
+	char **strings;
+
+	lwsl_err("FATAL: Caught signal %d, producing backtrace:\n", signum);
+
+	size = backtrace(array, 20);
+	strings = backtrace_symbols(array, size);
+
+	if (strings != NULL) {
+		for (int i = 0; i < size; i++)
+			lwsl_err("  %s\n", strings[i]);
+		free(strings);
+	}
+
+	signal(signum, SIG_DFL);
+	abort();
+}
+#endif
 
 /*
  * root-level sighup handler
@@ -244,6 +290,8 @@ int main(int argc, char **argv)
 #endif
 
 	strcpy(config_dir, "/etc/lwsws");
+	extern int opterr;
+	opterr = 0;
 	while (n >= 0) {
 #if defined(LWS_HAS_GETOPT_LONG) || defined(WIN32)
 		n = getopt_long(argc, argv, "hd:c:n", options, NULL);
@@ -278,38 +326,60 @@ int main(int argc, char **argv)
 	 * the original one dies randomly.
 	 */
 
-	signal(SIGHUP, reload_handler);
-	signal(SIGINT, reload_handler);
-
-	fprintf(stderr, "Root process is %u\n", (unsigned int)getpid());
-
-	while (1) {
-		if (do_reload) {
-			do_reload = 0;
-			n = fork();
-			if (n == 0) /* new */
+	{
+		int is_stub = 0;
+		for (n = 1; n < argc; n++)
+			if (!strcmp(argv[n], "--lws-dht-dnssec-monitor-root") ||
+			    !strncmp(argv[n], "--lws-stub", 10)) {
+				is_stub = 1;
 				break;
-			/* old */
-			if (n > 0)
-				for (m = 0; m < (int)LWS_ARRAY_SIZE(pids); m++)
-					if (!pids[m]) {
-						pids[m] = n;
-						break;
-					}
-		}
-#ifndef _WIN32
-		sleep(2);
+			}
 
-		n = waitpid(-1, &status, WNOHANG);
-		if (n > 0)
-			for (m = 0; m < (int)LWS_ARRAY_SIZE(pids); m++)
-				if (pids[m] == n) {
-					pids[m] = 0;
-					break;
+		if (!is_stub) {
+			signal(SIGPIPE, SIG_IGN);
+			signal(SIGHUP, reload_handler);
+			signal(SIGINT, reload_handler);
+			signal(SIGTERM, reload_handler);
+
+			fprintf(stderr, "Root process is %u\n", (unsigned int)getpid());
+
+			while (1) {
+				if (do_reload) {
+					do_reload = 0;
+					n = fork();
+					if (n == 0) /* new */
+						break;
+					/* old */
+					if (n > 0)
+						for (m = 0; m < (int)LWS_ARRAY_SIZE(pids); m++)
+							if (!pids[m]) {
+								pids[m] = n;
+								break;
+							}
+				}
+#ifndef _WIN32
+				sleep(2);
+
+				n = waitpid(-1, &status, WNOHANG);
+				if (n > 0) {
+					if (WIFEXITED(status))
+						fprintf(stderr, "Child process %d exited with status %d\n", n, WEXITSTATUS(status));
+					else if (WIFSIGNALED(status))
+						fprintf(stderr, "Child process %d killed by signal %d (core: %d)\n", n, WTERMSIG(status), WCOREDUMP(status));
+					else if (WIFSTOPPED(status))
+						fprintf(stderr, "Child process %d stopped by signal %d\n", n, WSTOPSIG(status));
+
+					for (m = 0; m < (int)LWS_ARRAY_SIZE(pids); m++)
+						if (pids[m] == n) {
+							pids[m] = 0;
+							break;
+						}
 				}
 #else
 // !!! implemenation needed
 #endif
+			}
+		}
 	}
 #endif
 	/* child process */
@@ -317,7 +387,15 @@ int main(int argc, char **argv)
 	lws_set_log_level(debug_level, lwsl_emit_stderr_notimestamp);
 
 	lwsl_notice("lwsws libwebsockets web server - license CC0 + MIT\n");
-	lwsl_notice("(C) Copyright 2010-2020 Andy Green <andy@warmcat.com>\n");
+	lwsl_notice("(C) Copyright 2010-2026 Andy Green <andy@warmcat.com>\n");
+
+#if defined(__linux__) || defined(__APPLE__)
+	signal(SIGSEGV, crash_handler);
+	signal(SIGABRT, crash_handler);
+	signal(SIGBUS, crash_handler);
+	signal(SIGILL, crash_handler);
+	signal(SIGFPE, crash_handler);
+#endif
 
 #if (UV_VERSION_MAJOR > 0) // Travis...
 	uv_loop_init(&loop);
@@ -329,8 +407,10 @@ int main(int argc, char **argv)
 	uv_signal_start(&signal_outer[0], signal_cb, SIGINT);
 	uv_signal_init(&loop, &signal_outer[1]);
 	uv_signal_start(&signal_outer[1], signal_cb, SIGHUP);
+	uv_signal_init(&loop, &signal_outer[2]);
+	uv_signal_start(&signal_outer[2], signal_cb, SIGTERM);
 
-	if (context_creation()) {
+	if (context_creation(argc, (const char **)argv)) {
 		lwsl_err("Context creation failed\n");
 		return 1;
 	}
@@ -339,7 +419,7 @@ int main(int argc, char **argv)
 
 	lwsl_err("%s: closing\n", __func__);
 
-	for (n = 0; n < 2; n++) {
+	for (n = 0; n < 3; n++) {
 		uv_signal_stop(&signal_outer[n]);
 		uv_close((uv_handle_t *)&signal_outer[n], NULL);
 	}

@@ -31,6 +31,15 @@ lws_tls_server_client_cert_verify_config(struct lws_vhost *vh)
 {
 	int verify_options = SSL_VERIFY_PEER;
 
+	if (lws_check_opt(vh->options,
+			  LWS_SERVER_OPTION_MBEDTLS_VERIFY_CLIENT_CERT_POST_HANDSHAKE)) {
+		verify_options |= SSL_VERIFY_POST_HANDSHAKE;
+		SSL_CTX_set_verify(vh->tls.ssl_ctx, verify_options, NULL);
+		lwsl_notice("%s: vh %s can verify client cert post-handshake\n",
+				__func__, vh->name);
+		return 0;
+	}
+
 	/* as a server, are we requiring clients to identify themselves? */
 	if (!lws_check_opt(vh->options,
 			  LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT)) {
@@ -39,7 +48,7 @@ lws_tls_server_client_cert_verify_config(struct lws_vhost *vh)
 	}
 
 	if (!lws_check_opt(vh->options, LWS_SERVER_OPTION_PEER_CERT_NOT_REQUIRED))
-		verify_options = SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+		verify_options |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
 
 	lwsl_notice("%s: vh %s requires client cert %d\n", __func__, vh->name,
 		    verify_options);
@@ -111,6 +120,9 @@ lws_tls_server_certs_load(struct lws_vhost *vhost, struct lws *wsi,
 	uint8_t *p = NULL;
 	long err;
 	int n;
+	mbedtls_x509_crt extras = {0};
+	mbedtls_x509_crt *leaf = NULL;
+	mbedtls_x509_crt *tail = NULL;
 
 	if ((!cert || !private_key) && (!mem_cert || !mem_privkey)) {
 		lwsl_notice("%s: no usable input\n", __func__);
@@ -160,6 +172,45 @@ lws_tls_server_certs_load(struct lws_vhost *vhost, struct lws *wsi,
 		return 1;
 	}
 
+	/*
+	 * The single-cert load above only installs the leaf. If the PEM source
+	 * contains a chain (leaf + intermediates [+ root]), parse the whole
+	 * file and splice the intermediates onto the leaf's mbedtls_x509_crt
+	 * ->next list so the TLS handshake sends them on the wire.
+	 */
+	mbedtls_x509_crt_init(&extras);
+
+	if (cert)
+		n = mbedtls_x509_crt_parse_file(&extras, cert);
+	else if (mem_cert && mem_cert_len)
+		n = mbedtls_x509_crt_parse(&extras,
+									(const unsigned char *)mem_cert,
+									(size_t)mem_cert_len);
+
+	if (n == 0 && extras.next) {
+		leaf = ssl_ctx_get_mbedtls_x509_crt(vhost->tls.ssl_ctx);
+		if (leaf) {
+			tail = leaf;
+			while (tail->next)
+				tail = tail->next;
+			/*
+			 * Detach the intermediates from `extras` and hang
+			 * them off the leaf. mbedtls_x509_crt_free(&extras)
+			 * will then only free `extras` itself (cert #1, a
+			 * duplicate of the leaf), not the chain we kept.
+			 */
+			tail->next = extras.next;
+			extras.next = NULL;
+			lwsl_notice("%s: appended chain certs from %s\n",
+						__func__, cert ? cert : "(mem)");
+		}
+	} else if (n < 0) {
+		lwsl_warn("%s: chain parse n=-0x%x; serving leaf only\n",
+					__func__, -n);
+	}
+
+	mbedtls_x509_crt_free(&extras);
+
 	if (lws_tls_alloc_pem_to_der_file(vhost->context, private_key,
 					  (char *)mem_privkey, mem_privkey_len,
 					  &p, &flen)) {
@@ -181,54 +232,102 @@ lws_tls_server_certs_load(struct lws_vhost *vhost, struct lws *wsi,
 	return 0;
 }
 
+
+
 int
-lws_tls_server_vhost_backend_init(const struct lws_context_creation_info *info,
-				  struct lws_vhost *vhost, struct lws *wsi)
+lws_tls_vhost_backend_create_ctx(struct lws_vhost *vhost)
 {
 	const SSL_METHOD *method = TLS_server_method();
 	uint8_t *p;
 	lws_filepos_t flen;
-	int n;
+	struct lws_vhost_tls *tls = &vhost->tls;
 
-	vhost->tls.ssl_ctx = SSL_CTX_new(method, &vhost->context->mcdc);	/* create context */
-	if (!vhost->tls.ssl_ctx) {
+	tls->ssl_ctx = SSL_CTX_new(method);	/* create context */
+	if (!tls->ssl_ctx) {
 		lwsl_err("problem creating ssl context\n");
 		return 1;
 	}
 
-	if (!vhost->tls.use_ssl ||
-	    (!info->ssl_cert_filepath && !info->server_ssl_cert_mem))
-		return 0;
+	tls->ssl_ctx->rngctx = &vhost->context->mcdc;
 
-	if (info->ssl_ca_filepath) {
+	if (tls->cfg_ssl_ca_filepath) {
 		lwsl_notice("%s: vh %s: loading CA filepath %s\n", __func__,
-			    vhost->name, info->ssl_ca_filepath);
+			    vhost->name, tls->cfg_ssl_ca_filepath);
 		if (lws_tls_alloc_pem_to_der_file(vhost->context,
-				info->ssl_ca_filepath, NULL, 0, &p, &flen)) {
+				tls->cfg_ssl_ca_filepath, NULL, 0, &p, &flen)) {
 			lwsl_err("couldn't find client CA file %s\n",
-					info->ssl_ca_filepath);
+					tls->cfg_ssl_ca_filepath);
 
 			return 1;
 		}
 
-		if (SSL_CTX_add_client_CA_ASN1(vhost->tls.ssl_ctx, (int)flen, p) != 1) {
+		if (SSL_CTX_add_client_CA_ASN1(tls->ssl_ctx, (int)flen, p) != 1) {
 			lwsl_err("%s: SSL_CTX_add_client_CA_ASN1 unhappy\n",
 				 __func__);
 			free(p);
 			return 1;
 		}
 		free(p);
-	} else {
-		if (info->server_ssl_ca_mem && info->server_ssl_ca_mem_len &&
-		    SSL_CTX_add_client_CA_ASN1(vhost->tls.ssl_ctx,
-					       (int)info->server_ssl_ca_mem_len,
-					       info->server_ssl_ca_mem) != 1) {
+	} else if (tls->cfg_server_ssl_ca_mem && tls->cfg_server_ssl_ca_mem_len) {
+		if (SSL_CTX_add_client_CA_ASN1(tls->ssl_ctx,
+					       (int)tls->cfg_server_ssl_ca_mem_len,
+					       tls->cfg_server_ssl_ca_mem) != 1) {
 			lwsl_err("%s: mem SSL_CTX_add_client_CA_ASN1 unhappy\n",
 				 __func__);
 			return 1;
 		}
 		lwsl_notice("%s: vh %s: mem CA OK\n", __func__, vhost->name);
 	}
+
+	/* Apply cipher list if specified */
+	if (tls->cfg_tls_ciphers_iana) {
+		if (!SSL_CTX_set_cipher_list(tls->ssl_ctx,
+					    tls->cfg_tls_ciphers_iana)) {
+			lwsl_err("SSL_CTX_set_cipher_list(%s) failed\n",
+				 tls->cfg_tls_ciphers_iana);
+			return 1;
+		}
+		lwsl_notice("%s: vh %s: applied IANA cipher list: %s\n", __func__,
+			    vhost->name, tls->cfg_tls_ciphers_iana);
+	} else if (tls->cfg_ssl_cipher_list) {
+		if (!SSL_CTX_set_cipher_list(tls->ssl_ctx,
+					    tls->cfg_ssl_cipher_list)) {
+			lwsl_err("SSL_CTX_set_cipher_list(%s) failed\n",
+				 tls->cfg_ssl_cipher_list);
+			return 1;
+		}
+		lwsl_notice("%s: vh %s: applied cipher list: %s\n", __func__,
+			    vhost->name, tls->cfg_ssl_cipher_list);
+	}
+
+	return 0;
+}
+
+int
+lws_tls_server_vhost_backend_init(const struct lws_context_creation_info *info,
+				  struct lws_vhost *vhost, struct lws *wsi)
+{
+	int n;
+
+	if (lws_tls_vhost_backend_create_ctx(vhost))
+		return 1;
+
+	if (!vhost->tls.use_ssl ||
+	    (!info->ssl_cert_filepath && !info->server_ssl_cert_mem))
+		return 0;
+
+	n = (int)lws_tls_generic_cert_checks(vhost, info->ssl_cert_filepath,
+					     info->ssl_private_key_filepath);
+
+	if (n == LWS_TLS_EXTANT_NO &&
+	    (vhost->options & LWS_SERVER_OPTION_IGNORE_MISSING_CERT)) {
+		lwsl_notice("No certs found, continuing without SSL_CTX\n");
+		SSL_CTX_free(vhost->tls.ssl_ctx);
+		vhost->tls.ssl_ctx = NULL;
+		return 0;
+	}
+
+
 
 	n = lws_tls_server_certs_load(vhost, wsi, info->ssl_cert_filepath,
 				      info->ssl_private_key_filepath,
@@ -246,7 +345,8 @@ int
 lws_tls_server_new_nonblocking(struct lws *wsi, lws_sockfd_type accept_fd)
 {
 	errno = 0;
-	wsi->tls.ssl = SSL_new(wsi->a.vhost->tls.ssl_ctx);
+	wsi->tls.ctx_ref = lws_tls_ctx_ref_get(wsi->a.vhost);
+	wsi->tls.ssl = SSL_new(wsi->tls.ctx_ref ? wsi->tls.ctx_ref->ctx : wsi->a.vhost->tls.ssl_ctx);
 	if (wsi->tls.ssl == NULL) {
 		lwsl_err("SSL_new failed: errno %d\n", errno);
 
@@ -264,11 +364,7 @@ lws_tls_server_new_nonblocking(struct lws *wsi, lws_sockfd_type accept_fd)
 	return 0;
 }
 
-#if defined(LWS_AMAZON_RTOS)
 enum lws_ssl_capable_status
-#else
-int
-#endif
 lws_tls_server_abort_connection(struct lws *wsi)
 {
 	if (wsi->tls.use_ssl)
@@ -285,12 +381,24 @@ lws_tls_server_accept(struct lws *wsi)
 	union lws_tls_cert_info_results ir;
 	int m, n;
 
+#if defined(LWS_WITH_LATENCY)
+	lws_usec_t _o_mbed_ssl_acc_start = lws_now_usecs();
+#endif
+
 	n = SSL_accept(wsi->tls.ssl);
+
+#if defined(LWS_WITH_LATENCY)
+	{
+		unsigned int ms = (unsigned int)((lws_now_usecs() - _o_mbed_ssl_acc_start) / 1000);
+		if (ms > 2 && !wsi->tls.ssl_accept_in_bg)
+			lws_latency_note(&wsi->a.context->pt[(int)wsi->tsi], _o_mbed_ssl_acc_start, 2000, "ssl_accept:%dms", ms);
+	}
+#endif
 
 	wsi->skip_fallback = 1;
 	if (n == 1) {
 
-		if (strstr(wsi->a.vhost->name, ".invalid")) {
+		if ((char *)strstr(wsi->a.vhost->name, ".invalid")) {
 			lwsl_notice("%s: vhost has .invalid, "
 				    "rejecting accept\n", __func__);
 
@@ -330,7 +438,7 @@ lws_tls_server_accept(struct lws *wsi)
 		return LWS_SSL_CAPABLE_ERROR;
 
 	if (m == SSL_ERROR_WANT_READ || SSL_want_read(wsi->tls.ssl)) {
-		if (lws_change_pollfd(wsi, 0, LWS_POLLIN)) {
+		if (!wsi->tls.ssl_accept_in_bg && lws_change_pollfd(wsi, 0, LWS_POLLIN)) {
 			lwsl_info("%s: WANT_READ change_pollfd failed\n",
 				  __func__);
 			return LWS_SSL_CAPABLE_ERROR;
@@ -342,7 +450,7 @@ lws_tls_server_accept(struct lws *wsi)
 	if (m == SSL_ERROR_WANT_WRITE || SSL_want_write(wsi->tls.ssl)) {
 		lwsl_debug("%s: WANT_WRITE\n", __func__);
 
-		if (lws_change_pollfd(wsi, 0, LWS_POLLOUT)) {
+		if (!wsi->tls.ssl_accept_in_bg && lws_change_pollfd(wsi, 0, LWS_POLLOUT)) {
 			lwsl_info("%s: WANT_WRITE change_pollfd failed\n",
 				  __func__);
 			return LWS_SSL_CAPABLE_ERROR;
@@ -645,11 +753,104 @@ lws_tls_acme_sni_csr_create(struct lws_context *context, const char *elements[],
 	/* subject must be formatted like "C=TW,O=warmcat,CN=myserver" */
 
 	for (n = 0; n < (int)LWS_ARRAY_SIZE(x5); n++) {
-		if (p != subject)
-			*p++ = ',';
-		if (elements[n])
+		if (elements[n]) {
+			if (p != subject)
+				*p++ = ',';
 			p += lws_snprintf(p, lws_ptr_diff_size_t(end, p), "%s=%s", x5[n],
 					  elements[n]);
+		}
+	}
+
+	if (mbedtls_x509write_csr_set_subject_name(&csr, subject))
+		goto fail1;
+
+	mbedtls_x509write_csr_set_key(&csr, &mpk);
+	mbedtls_x509write_csr_set_md_alg(&csr, MBEDTLS_MD_SHA256);
+
+	/*
+	 * data is written at the end of the buffer! Use the
+	 * return value to determine where you should start
+	 * using the buffer
+	 */
+	n = mbedtls_x509write_csr_der(&csr, buf, (size_t)buf_size, _rngf, context);
+	if (n < 0) {
+		lwsl_notice("%s: write csr der failed\n", __func__);
+		goto fail1;
+	}
+
+	/* we have it in DER, we need it in b64URL */
+
+	n = lws_jws_base64_enc((char *)(buf + buf_size) - n, (size_t)n,
+			       (char *)dcsr, csr_len);
+	if (n < 0)
+		goto fail1;
+
+	/*
+	 * okay, the CSR is done, last we need the private key in PEM
+	 * re-use the DER CSR buf as the result buffer since we cn do it in
+	 * one step
+	 */
+
+	if (mbedtls_pk_write_key_pem(&mpk, buf, (size_t)buf_size)) {
+		lwsl_notice("write key pem failed\n");
+		goto fail1;
+	}
+
+	*privkey_pem = (char *)buf;
+	*privkey_len = strlen((const char *)buf);
+
+	mbedtls_pk_free(&mpk);
+	mbedtls_x509write_csr_free(&csr);
+
+	return n;
+
+fail1:
+	mbedtls_pk_free(&mpk);
+fail:
+	mbedtls_x509write_csr_free(&csr);
+	free(buf);
+
+	return -1;
+}
+
+int
+lws_tls_acme_sni_csr_create_ecdsa(struct lws_context *context, const char *elements[],
+			    uint8_t *dcsr, size_t csr_len, char **privkey_pem,
+			    size_t *privkey_len)
+{
+	mbedtls_x509write_csr csr;
+	mbedtls_pk_context mpk;
+	int buf_size = 4096, n;
+	char subject[200], *p = subject, *end = p + sizeof(subject) - 1;
+	uint8_t *buf = malloc((unsigned int)buf_size); /* malloc because given to user code */
+
+	if (!buf)
+		return -1;
+
+	mbedtls_x509write_csr_init(&csr);
+
+	mbedtls_pk_init(&mpk);
+	if (mbedtls_pk_setup(&mpk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY))) {
+		lwsl_notice("%s: pk_setup failed\n", __func__);
+		goto fail;
+	}
+
+	n = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(mpk), _rngf, context);
+	if (n) {
+		lwsl_notice("%s: failed to generate keys\n", __func__);
+
+		goto fail1;
+	}
+
+	/* subject must be formatted like "C=TW,O=warmcat,CN=myserver" */
+
+	for (n = 0; n < (int)LWS_ARRAY_SIZE(x5); n++) {
+		if (elements[n]) {
+			if (p != subject)
+				*p++ = ',';
+			p += lws_snprintf(p, lws_ptr_diff_size_t(end, p), "%s=%s", x5[n],
+					  elements[n]);
+		}
 	}
 
 	if (mbedtls_x509write_csr_set_subject_name(&csr, subject))

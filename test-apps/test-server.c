@@ -58,13 +58,22 @@ char crl_path[1024] = "";
  * plugins, in this case by statically including them at build-time.
  */
 
+#if defined(LWS_WITH_PLUGINS)
+static const char * const plugin_dirs[] = {
+	LWS_PLUGIN_DIR "/",
+	NULL
+};
+#else
+#if !defined (LWS_PLUGIN_STATIC)
 #define LWS_PLUGIN_STATIC
-#if defined(LWS_ROLE_WS)
-#include "../plugins/protocol_lws_mirror.c"
-#include "../plugins/protocol_lws_status.c"
-#include "../plugins/protocol_dumb_increment.c"
 #endif
-#include "../plugins/protocol_post_demo.c"
+#if defined(LWS_ROLE_WS)
+#include "../plugins/protocol_lws_mirror/protocol_lws_mirror.c"
+#include "../plugins/protocol_lws_status/protocol_lws_status.c"
+#include "../plugins/protocol_dumb_increment/protocol_dumb_increment.c"
+#endif
+#include "../plugins/protocol_post_demo/protocol_post_demo.c"
+#endif
 
 #if defined(LWS_WITH_EXTERNAL_POLL)
 static struct lws_pollfd *
@@ -188,12 +197,14 @@ static struct lws_protocols protocols[] = {
 	/* first protocol must always be HTTP handler */
 
 	{ "http-only", lws_callback_http, 0, 0, 0, NULL, 0 },
+#if !defined(LWS_WITH_PLUGINS)
 #if defined(LWS_ROLE_WS)
 	LWS_PLUGIN_PROTOCOL_DUMB_INCREMENT,
 	LWS_PLUGIN_PROTOCOL_MIRROR,
 	LWS_PLUGIN_PROTOCOL_LWS_STATUS,
 #endif
 	LWS_PLUGIN_PROTOCOL_POST_DEMO,
+#endif
 	LWS_PROTOCOL_LIST_TERM
 };
 
@@ -262,81 +273,29 @@ static const struct lws_extension exts[] = {
  */
 
 static const struct lws_http_mount mount_ziptest_uncomm = {
-	NULL,			/* linked-list pointer to next*/
-	"/uncommziptest",		/* mountpoint in URL namespace on this vhost */
-	LOCAL_RESOURCE_PATH"/candide-uncompressed.zip",	/* handler */
-	NULL,	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_FILE,	/* origin points to a callback */
-	14,			/* strlen("/ziptest"), ie length of the mountpoint */
-	NULL,
+	.mountpoint		= "/uncommziptest",		/* mountpoint in URL namespace on this vhost */
+	.origin			= LOCAL_RESOURCE_PATH"/candide-uncompressed.zip",	/* handler */
+	.origin_protocol	= LWSMPRO_FILE,			/* origin points to a file */
+	.mountpoint_len		= 14,				/* strlen("/ziptest"), ie length of the mountpoint */
 }, mount_ziptest = {
-	(struct lws_http_mount *)&mount_ziptest_uncomm,			/* linked-list pointer to next*/
-	"/ziptest",		/* mountpoint in URL namespace on this vhost */
-	LOCAL_RESOURCE_PATH"/candide.zip",	/* handler */
-	NULL,	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_FILE,	/* origin points to a callback */
-	8,			/* strlen("/ziptest"), ie length of the mountpoint */
-	NULL,
-}, mount_post = {
-	(struct lws_http_mount *)&mount_ziptest, /* linked-list pointer to next*/
-	"/formtest",		/* mountpoint in URL namespace on this vhost */
-	"protocol-post-demo",	/* handler */
-	NULL,	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_CALLBACK,	/* origin points to a callback */
-	9,			/* strlen("/formtest"), ie length of the mountpoint */
-	NULL,
+	.mount_next		= (struct lws_http_mount *)&mount_ziptest_uncomm,			/* linked-list pointer to next*/
+	.mountpoint		= "/ziptest",			/* mountpoint in URL namespace on this vhost */
+	.origin			= LOCAL_RESOURCE_PATH"/candide.zip",			/* handler */
+	.origin_protocol	= LWSMPRO_FILE,			/* origin points to a file */
+	.mountpoint_len		= 8,				/* strlen("/ziptest"), ie length of the mountpoint */
+}, mount_post = 	{
+	.mount_next		= (struct lws_http_mount *)&mount_ziptest, /* linked-list pointer to next*/
+	.mountpoint		= "/formtest",			/* mountpoint in URL namespace on this vhost */
+	.protocol		= "protocol-post-demo",		/* handler */
+	.origin_protocol	= LWSMPRO_CALLBACK,		/* origin points to a callback */
+	.mountpoint_len		= 9,				/* strlen("/formtest"), ie length of the mountpoint */
 }, mount = {
-	/* .mount_next */		&mount_post,	/* linked-list "next" */
-	/* .mountpoint */		"/",		/* mountpoint URL */
-	/* .origin */			LOCAL_RESOURCE_PATH, /* serve from dir */
-	/* .def */			"test.html",	/* default filename */
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
-	/* .mountpoint_len */		1,		/* char count */
-	/* .basic_auth_login_file */	NULL,
+	.mount_next		= &mount_post,			/* linked-list "next" */
+	.mountpoint		= "/",				/* mountpoint URL */
+	.origin			= LOCAL_RESOURCE_PATH,		/* serve from dir */
+	.def			= "test.html",			/* default filename */
+	.origin_protocol	= LWSMPRO_FILE,			/* files in a dir */
+	.mountpoint_len		= 1,				/* char count */
 };
 
 
@@ -582,6 +541,9 @@ int main(int argc, char **argv)
 
 	info.iface = iface;
 	info.protocols = protocols;
+#if defined(LWS_WITH_PLUGINS)
+	info.plugin_dirs = plugin_dirs;
+#endif
 
 #if defined(LWS_WITH_TLS)
 	info.ssl_cert_filepath = NULL;
@@ -618,6 +580,7 @@ int main(int argc, char **argv)
 #endif
 	info.timeout_secs = 5;
 #if defined(LWS_WITH_TLS)
+#if !defined(LWS_WITH_MBEDTLS) && !defined(LWS_WITH_GNUTLS) && !defined(USE_WOLFSSL)
 	info.ssl_cipher_list = "ECDHE-ECDSA-AES256-GCM-SHA384:"
 			       "ECDHE-RSA-AES256-GCM-SHA384:"
 			       "DHE-RSA-AES256-GCM-SHA384:"
@@ -631,6 +594,12 @@ int main(int argc, char **argv)
 			       "!DHE-RSA-AES256-SHA256:"
 			       "!AES256-GCM-SHA384:"
 			       "!AES256-SHA256";
+	/*
+	 * This is needed for DHE-RSA-AES256-GCM-SHA384, it does enable all
+	 * TLSv1.2 Kx=DH ciphers though (if the're on the ssl_cipher_list).
+	 */
+	info.options |= LWS_SERVER_OPTION_OPENSSL_AUTO_DH_PARAMETERS;
+#endif
 #endif
 	info.mounts = &mount;
 #if defined(LWS_WITH_PEER_LIMITS)

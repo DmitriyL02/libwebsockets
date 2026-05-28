@@ -397,7 +397,7 @@ lws_ss_proxy_create(struct lws_context *context, const char *bind, int port);
  * Returns a printable name for the connection state index passed in.
  */
 LWS_VISIBLE LWS_EXTERN const char *
-lws_ss_state_name(int state);
+lws_ss_state_name(lws_ss_constate_t state);
 
 /**
  * lws_ss_get_context() - convenience helper to recover the lws context
@@ -409,6 +409,17 @@ lws_ss_state_name(int state);
  */
 LWS_VISIBLE LWS_EXTERN struct lws_context *
 lws_ss_get_context(struct lws_ss_handle *h);
+
+/**
+ * lws_ss_get_vhost() - convenience helper to get the vhost the ss is bound to
+ *
+ * \param h: secure streams handle
+ *
+ * Returns NULL if disconnected, or the the lws_vhost of the ss' wsi connection. 
+ */
+LWS_VISIBLE LWS_EXTERN struct lws_vhost *
+lws_ss_get_vhost(struct lws_ss_handle *h);
+
 
 #define LWSSS_TIMEOUT_FROM_POLICY				0
 
@@ -642,6 +653,46 @@ lws_ss_get_est_peer_tx_credit(struct lws_ss_handle *h);
 LWS_VISIBLE LWS_EXTERN const char *
 lws_ss_tag(struct lws_ss_handle *h);
 
+LWS_VISIBLE LWS_EXTERN void
+lws_ss_dump_extant(struct lws_context *cx, int tsi);
+
+#if defined(LWS_WITH_NETWORK)
+/**
+ * lws_ss_adopt_raw() - bind ss to existing fd
+ *
+ * \param ss: pointer to lws_ss_t to adopt the fd
+ * \param fd: the existing fd
+ *
+ * "connects" the existing ss to a wsi adoption of fd, it's useful for cases
+ * like local representation of eg a pipe() fd using ss.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_ss_adopt_raw(struct lws_ss_handle *ss, lws_sock_file_fd_type fd);
+#endif
+
+/*
+ * lws_ss_validity_confirmed() - reset the validity timer for a network connection
+ *
+ * \param h: the SS handle
+ *
+ * Network connections are subject to intervals defined by the context, the
+ * vhost if server connections, or the client connect info if a client
+ * connection.  If the connection goes longer than the specified time since
+ * last observing traffic that can only happen if traffic is passing in both
+ * directions, then lws will try to create a PING transaction on the network
+ * connection.
+ *
+ * If the connection reaches the specified `.secs_since_valid_hangup` time
+ * still without any proof of validity, the connection will be closed.
+ *
+ * If the PONG comes, or user code observes traffic that satisfies the proof
+ * that both directions are passing traffic to the peer and calls this api,
+ * the connection validity timer is reset and the scheme repeats.
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_ss_validity_confirmed(struct lws_ss_handle *h);
+
+
 
 #if defined(LWS_WITH_SECURE_STREAMS_AUTH_SIGV4)
 /**
@@ -681,7 +732,6 @@ LWS_VISIBLE LWS_EXTERN int
 lws_aws_filesystem_credentials_helper(const char *path, const char *kid,
 				      const char *ak, char **aws_keyid,
 				      char **aws_key);
-
 #endif
 
 #if defined(STANDALONE)

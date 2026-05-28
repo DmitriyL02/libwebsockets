@@ -30,8 +30,18 @@ __lws_wsi_remove_from_sul(struct lws *wsi)
 	lws_sul_cancel(&wsi->sul_timeout);
 	lws_sul_cancel(&wsi->sul_hrtimer);
 	lws_sul_cancel(&wsi->sul_validity);
+	lws_sul_cancel(&wsi->sul_connect_timeout);
+#if defined(WIN32)
+	lws_sul_cancel(&wsi->win32_sul_connect_async_check);
+#endif
+#if defined(LWS_WITH_HTTP_PROXY)
+	lws_sul_cancel(&wsi->sul_ws_proxy_est);
+#endif
 #if defined(LWS_WITH_SYS_FAULT_INJECTION)
 	lws_sul_cancel(&wsi->sul_fault_timedclose);
+#endif
+#if defined(LWS_TLS_SYNTHESIZE_CB)
+	lws_sul_cancel(&wsi->tls.sul_cb_synth);
 #endif
 }
 
@@ -64,7 +74,10 @@ __lws_set_timer_usecs(struct lws *wsi, lws_usec_t us)
 void
 lws_set_timer_usecs(struct lws *wsi, lws_usec_t usecs)
 {
-	__lws_set_timer_usecs(wsi, usecs);
+	if ((int64_t)usecs == (int64_t)LWS_SET_TIMER_USEC_CANCEL)
+		lws_sul_cancel(&wsi->sul_hrtimer);
+	else
+		__lws_set_timer_usecs(wsi, usecs);
 }
 
 /*
@@ -126,6 +139,12 @@ __lws_set_timeout(struct lws *wsi, enum pending_timeout reason, int secs)
 {
 	struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
 
+	if (reason == PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE && secs > 0) {
+		if (wsi->immortal_substream_count > 0) {
+			lwsl_wsi_info(wsi, "Refusing to set idle keepalive timeout because it has %d immortal substreams", wsi->immortal_substream_count);
+			return;
+		}
+	}
 	wsi->sul_timeout.cb = lws_sul_wsitimeout_cb;
 	__lws_sul_insert_us(&pt->pt_sul_owner[LWSSULLI_MISS_IF_SUSPENDED],
 			    &wsi->sul_timeout,
@@ -160,7 +179,13 @@ lws_set_timeout(struct lws *wsi, enum pending_timeout reason, int secs)
 	if (secs == LWS_TO_KILL_ASYNC)
 		secs = 0;
 
-	// assert(!secs || !wsi->mux_stream_immortal);
+	if (reason == PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE && secs > 0) {
+		if (wsi->immortal_substream_count > 0) {
+			lwsl_wsi_info(wsi, "Refusing to set idle keepalive timeout because it has %d immortal substreams", wsi->immortal_substream_count);
+			lws_context_unlock(pt->context);
+			return;
+		}
+	}
 	if (secs && wsi->mux_stream_immortal)
 		lwsl_wsi_err(wsi, "on immortal stream %d %d", reason, secs);
 
@@ -188,7 +213,7 @@ lws_set_timeout_us(struct lws *wsi, enum pending_timeout reason, lws_usec_t us)
 	__lws_sul_insert_us(&pt->pt_sul_owner[LWSSULLI_MISS_IF_SUSPENDED],
 			    &wsi->sul_timeout, us);
 
-	lwsl_wsi_notice(wsi, "%llu us, reason %d",
+	lwsl_wsi_info(wsi, "%llu us, reason %d",
 			     (unsigned long long)us, reason);
 
 	wsi->pending_timeout = (char)reason;
@@ -205,7 +230,13 @@ lws_validity_cb(lws_sorted_usec_list_t *sul)
 	/* one of either the ping or hangup validity threshold was crossed */
 
 	if (wsi->validity_hup) {
-		lwsl_wsi_info(wsi, "validity too old");
+		char buf[128];
+		buf[0] = '\0';
+		lws_get_peer_simple(wsi, buf, sizeof(buf));
+
+		lwsl_wsi_notice(wsi, "VALIDITY TIMEOUT EXPIRED ON (protocol %s, peer %s)! Server is closing connection. (ping=%d, hangup=%d)\n",
+			    wsi->a.protocol ? wsi->a.protocol->name : "none", buf,
+			    rbo ? rbo->secs_since_valid_ping : 0, rbo ? rbo->secs_since_valid_hangup : 0);
 		struct lws_context *cx = wsi->a.context;
 		struct lws_context_per_thread *pt = &cx->pt[(int)wsi->tsi];
 
@@ -281,8 +312,7 @@ lws_validity_confirmed(struct lws *wsi)
 	 * to the role to figure out who actually needs to understand their
 	 * validity was confirmed.
 	 */
-	if (!wsi->h2_stream_carries_ws && /* only if not encapsulated */
-	    wsi->role_ops &&
+	if (wsi->role_ops &&
 	    lws_rops_fidx(wsi->role_ops, LWS_ROPS_issue_keepalive))
 		lws_rops_func_fidx(wsi->role_ops, LWS_ROPS_issue_keepalive).
 							issue_keepalive(wsi, 1);

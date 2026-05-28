@@ -42,7 +42,7 @@
 #include "private-lib-core.h"
 
 #include "esp_system.h"
-#include "esp_spi_flash.h"
+#include "spi_flash_mmap.h"
 #include "esp_wifi.h"
 #include <nvs_flash.h>
 #include <esp_netif.h>
@@ -84,6 +84,7 @@ lws_netdev_wifi_connect_plat(lws_netdev_instance_t *nd, const char *ssid,
 
 	wnde32->wnd.flags |= LNDIW_MODE_STA;
 	esp_wifi_set_mode(WIFI_MODE_STA);
+	esp_wifi_set_ps(WIFI_PS_NONE);
 
 #if 0
 	/* we will do our own dhcp */
@@ -94,6 +95,13 @@ lws_netdev_wifi_connect_plat(lws_netdev_instance_t *nd, const char *ssid,
 		    sizeof(wnde32->sta_config.sta.ssid));
 	lws_strncpy((char *)wnde32->sta_config.sta.password, passphrase,
 		    sizeof(wnde32->sta_config.sta.password));
+
+	if (bssid) {
+		wnde32->sta_config.sta.bssid_set = 1;
+		memcpy(wnde32->sta_config.sta.bssid, bssid, 6);
+	} else {
+		wnde32->sta_config.sta.bssid_set = 0;
+	}
 
 	esp_wifi_set_config(WIFI_IF_STA, &wnde32->sta_config);
 	esp_wifi_connect();
@@ -159,9 +167,9 @@ lws_esp32_scan_update(lws_netdev_instance_wifi_t *wnd)
 			w->ssid_len = m;
 
 			memcpy(w->bssid, ar->bssid, 6);
-
-			lws_dll2_add_sorted(&w->list, &wnd->scan,
-					    lws_netdev_wifi_rssi_sort_compare);
+		} else {
+			/* we will update the rssi and re-insert it */
+			lws_dll2_remove(&w->list);
 		}
 
 		if (w->rssi_count == LWS_ARRAY_SIZE(w->rssi))
@@ -171,6 +179,9 @@ lws_esp32_scan_update(lws_netdev_instance_wifi_t *wnd)
 		w->rssi[w->rssi_next] = ar->rssi;
 		w->rssi_avg += w->rssi[w->rssi_next++];
 		w->rssi_next = w->rssi_next & (LWS_ARRAY_SIZE(w->rssi) - 1);
+
+		lws_dll2_add_sorted(&w->list, &wnd->scan,
+				    lws_netdev_wifi_rssi_sort_compare);
 
 		w->ch = ar->primary;
 		w->authmode = ar->authmode;
@@ -234,18 +245,17 @@ lws_netdev_wifi_event_plat(struct lws_netdev_instance *nd, lws_usec_t timestamp,
 		switch (atoi(ev)) {
 		case WIFI_EVENT_STA_START:
 			wnd->state = LWSNDVWIFI_STATE_INITIAL;
-			if (!lws_netdev_wifi_redo_last(wnd))
-				break;
 
 			/*
-			 * if the "try last successful" one fails, start the
-			 * scan by falling through
+			 * always start the scan by falling through
 			 */
 
 		case WIFI_EVENT_STA_DISCONNECTED:
+#if defined(LWS_WITH_SYS_SMD)
 			lws_smd_msg_printf(ctx, LWSSMDCL_NETWORK,
 					   "{\"type\":\"linkdown\","
 					   "\"if\":\"%s\"}", wnd->inst.name);
+#endif
 			wnd->state = LWSNDVWIFI_STATE_SCAN;
 			/*
 			 * We do it via the sul so we don't get timed scans
@@ -256,9 +266,11 @@ lws_netdev_wifi_event_plat(struct lws_netdev_instance *nd, lws_usec_t timestamp,
 			break;
 
 		case WIFI_EVENT_STA_CONNECTED:
+#if defined(LWS_WITH_SYS_SMD)
 			lws_smd_msg_printf(ctx, LWSSMDCL_NETWORK,
 					   "{\"type\":\"linkup\","
 					   "\"if\":\"%s\"}", wnd->inst.name);
+#endif
 			break;
 
 		case WIFI_EVENT_SCAN_DONE:
@@ -307,9 +319,11 @@ _event_handler_wifi(void *arg, esp_event_base_t event_base, int32_t event_id,
 		 * for other things to consume.
 		 */
 
+#if defined(LWS_WITH_SYS_SMD)
 		lws_smd_msg_printf(ctx, LWSSMDCL_NETWORK,
 				   "{\"type\":\"priv\",\"if\":\"%s\",\"ev\":%d}",
 				   wnd->inst.name, (int)event_id);
+#endif
 		break;
 	default:
 		return;
@@ -369,9 +383,11 @@ _event_handler_ip(void *arg, esp_event_base_t event_base, int32_t event_id,
 
 		lws_write_numeric_address((void *)&e->ip_info.ip, 4, ip,
 				sizeof(ip));
+#if defined(LWS_WITH_SYS_SMD)
 		lws_smd_msg_printf(ctx, LWSSMDCL_NETWORK,
 				   "{\"type\":\"ipacq\",\"if\":\"%s\","
 				   "\"ipv4\":\"%s\"}", wnd->inst.name, ip);
+#endif
 	}
 }
 
@@ -407,6 +423,7 @@ lws_netdev_plat_wifi_init(void)
 	}
 
 	 ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+	esp_wifi_set_ps(WIFI_PS_NONE);
 
 	return 0;
 }
@@ -455,11 +472,14 @@ lws_netdev_wifi_up_plat(struct lws_netdev_instance *nd)
 			  &wnde32->instance_any_id));
 
 	esp_wifi_start();
+	esp_wifi_set_ps(WIFI_PS_NONE);
 	wnde32->wnd.flags |= LNDIW_UP;
 
+#if defined(LWS_WITH_SYS_SMD)
 	lws_smd_msg_printf(ctx, LWSSMDCL_NETWORK,
 			   "{\"type\":\"up\",\"if\":\"%s\"}",
 			   wnde32->wnd.inst.name);
+#endif
 
 	return 0;
 }
@@ -474,9 +494,11 @@ lws_netdev_wifi_down_plat(struct lws_netdev_instance *nd)
 	if (!(wnde32->wnd.flags & LNDIW_UP))
 		return 0;
 
+#if defined(LWS_WITH_SYS_SMD)
 	lws_smd_msg_printf(ctx, LWSSMDCL_NETWORK,
 			   "{\"type\":\"down\",\"if\":\"%s\"}",
 			   wnde32->wnd.inst.name);
+#endif
 
 	esp_wifi_stop();
 

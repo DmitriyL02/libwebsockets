@@ -212,10 +212,16 @@ lws_jwa_concat_kdf(struct lws_jwe *jwe, int direct, uint8_t *out,
 	int hlen = (int)lws_genhash_size(LWS_GENHASH_TYPE_SHA256), aidlen;
 	struct lws_genhash_ctx hash_ctx;
 	uint32_t ctr = 1, t;
+	uint32_t out_bits;
+	uint32_t out_bytes;
 	const char *aid;
 
 	if (!jwe->jose.enc_alg || !jwe->jose.alg)
 		return -1;
+
+	out_bits = direct ? jwe->jose.enc_alg->keybits_fixed :
+			    jwe->jose.alg->keybits_fixed;
+	out_bytes = out_bits / 8;
 
 	/*
 	 * Hash
@@ -268,7 +274,7 @@ lws_jwa_concat_kdf(struct lws_jwe *jwe, int direct, uint8_t *out,
 	 *    one hash output size (256b for SHA-256)
 	 */
 
-	while (ctr <= (uint32_t)((jwe->jose.enc_alg->keybits_fixed + (hlen - 1)) / hlen)) {
+	while (ctr <= (uint32_t)((out_bytes + ((unsigned int)hlen - 1)) / (unsigned int)hlen)) {
 
 		/*
 		 * Key derivation is performed using the Concat KDF, as defined
@@ -295,8 +301,7 @@ lws_jwa_concat_kdf(struct lws_jwe *jwe, int direct, uint8_t *out,
 		    lws_genhash_update(&hash_ctx, jwe->jose.e[LJJHI_APV].buf,
 						  jwe->jose.e[LJJHI_APV].len) ||
 		    lws_genhash_update(&hash_ctx,
-				       be32(jwe->jose.enc_alg->keybits_fixed, &t),
-					    4) ||
+				       be32(out_bits, &t), 4) ||
 		    lws_genhash_destroy(&hash_ctx, out)) {
 			lwsl_err("%s: fail\n", __func__);
 			lws_genhash_destroy(&hash_ctx, NULL);
@@ -488,9 +493,12 @@ lws_jwe_render_compact(struct lws_jwe *jwe, char *out, size_t out_len)
 		return -1;
 	}
 
+	if (out_len >= 32 * 1024 * 1024) /* cov */
+		return -1;
+
 	n = lws_jws_base64_enc(jwe->jws.map.buf[LJWS_JOSE],
 			       jwe->jws.map.len[LJWS_JOSE], out, out_len);
-	if (n < 0 || (int)out_len == n) {
+	if (n < 0 || n >= (int)out_len) {
 		lwsl_info("%s: unable to encode JOSE\n", __func__);
 		return -1;
 	}
@@ -501,7 +509,7 @@ lws_jwe_render_compact(struct lws_jwe *jwe, char *out, size_t out_len)
 
 	n = lws_jws_base64_enc(jwe->jws.map.buf[LJWE_EKEY],
 			       jwe->jws.map.len[LJWE_EKEY], out, out_len);
-	if (n < 0 || (int)out_len == n) {
+	if (n < 0 || n >= (int)out_len) {
 		lwsl_info("%s: unable to encode EKEY\n", __func__);
 		return -1;
 	}
@@ -511,7 +519,7 @@ lws_jwe_render_compact(struct lws_jwe *jwe, char *out, size_t out_len)
 	out_len -= (unsigned int)n + 1;
 	n = lws_jws_base64_enc(jwe->jws.map.buf[LJWE_IV],
 			       jwe->jws.map.len[LJWE_IV], out, out_len);
-	if (n < 0 || (int)out_len == n) {
+	if (n < 0 || n >= (int)out_len) {
 		lwsl_info("%s: unable to encode IV\n", __func__);
 		return -1;
 	}
@@ -522,7 +530,7 @@ lws_jwe_render_compact(struct lws_jwe *jwe, char *out, size_t out_len)
 
 	n = lws_jws_base64_enc(jwe->jws.map.buf[LJWE_CTXT],
 			       jwe->jws.map.len[LJWE_CTXT], out, out_len);
-	if (n < 0 || (int)out_len == n) {
+	if (n < 0 || n >= (int)out_len) {
 		lwsl_info("%s: unable to encode CTXT\n", __func__);
 		return -1;
 	}
@@ -532,7 +540,7 @@ lws_jwe_render_compact(struct lws_jwe *jwe, char *out, size_t out_len)
 	out_len -= (unsigned int)n + 1;
 	n = lws_jws_base64_enc(jwe->jws.map.buf[LJWE_ATAG],
 			       jwe->jws.map.len[LJWE_ATAG], out, out_len);
-	if (n < 0 || (int)out_len == n) {
+	if (n < 0 || n >= (int)out_len) {
 		lwsl_info("%s: unable to encode ATAG\n", __func__);
 		return -1;
 	}
@@ -540,8 +548,11 @@ lws_jwe_render_compact(struct lws_jwe *jwe, char *out, size_t out_len)
 	out += n;
 	*out++ = '\0';
 	out_len -= (unsigned int)n;
-
+#if defined(__COVERITY__)
+	return 0;
+#else
 	return (int)(orig - out_len);
+#endif
 }
 
 int

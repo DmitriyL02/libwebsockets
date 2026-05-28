@@ -96,6 +96,13 @@ lws_ranges_reset(struct lws_range_parsing *rp);
 
 #define LWS_HTTP_NO_KNOWN_HEADER 0xff
 
+#if defined(LWS_WITH_CUSTOM_HEADERS)
+#define UHO_NLEN	0
+#define UHO_VLEN	2
+#define UHO_LL		4
+#define UHO_NAME	8
+#endif
+
 /*
  * these are assigned from a pool held in the context.
  * Both client and server mode uses them for http header analysis
@@ -250,6 +257,8 @@ struct _lws_http_mode_related {
 #endif
 #if defined(LWS_WITH_SERVER)
 	unsigned int response_code;
+	const struct lws_protocol_vhost_options *mount_specific_headers;
+	unsigned int mount_specific_keepalive_timeout_secs;
 #endif
 #ifdef LWS_WITH_CGI
 	struct lws_cgi *cgi; /* wsi being cgi stream have one of these */
@@ -272,6 +281,11 @@ struct _lws_http_mode_related {
 	unsigned int proxy_clientside:1;
 	unsigned int proxy_parent_chunked:1;
 #endif
+#if defined(LWS_ROLE_H3)
+	unsigned char *h3_prefix_ptr;
+	uint32_t h3_base;
+	uint32_t h3_req_ric;
+#endif
 	unsigned int deferred_transaction_completed:1;
 	unsigned int content_length_explicitly_zero:1;
 	unsigned int content_length_given:1;
@@ -279,6 +293,11 @@ struct _lws_http_mode_related {
 	unsigned int multipart:1;
 	unsigned int cgi_transaction_complete:1;
 	unsigned int multipart_issue_boundary:1;
+
+	char auth_username[64];
+	char auth_password[64];
+	char *digest_auth_hdr;
+	char *extra_onward_headers;
 };
 
 
@@ -305,6 +324,7 @@ enum lws_check_basic_auth_results {
 	LCBA_CONTINUE,
 	LCBA_FAILED_AUTH,
 	LCBA_END_TRANSACTION,
+	LCBA_AUTH_RETRY_KEEPALIVE, /* digest auth computed, reuse existing TCP/TLS */
 };
 
 enum lws_check_basic_auth_results

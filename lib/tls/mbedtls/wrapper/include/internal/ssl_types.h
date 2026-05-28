@@ -195,6 +195,9 @@ struct ssl_ctx_st
 
     int read_buffer_len;
 
+    /* optional list of mbedTLS ciphersuite ids, terminated by 0 */
+    int *ciphersuites;
+
     X509_VERIFY_PARAM param;
 
     void *rngctx;
@@ -297,12 +300,16 @@ struct x509_method_st {
 
     int (*x509_load)(X509 *x, const unsigned char *buf, int len);
 
+    int (*x509_load_file)(X509 *x, const char *file);
+
+    int (*x509_load_path)(X509 *x, const char *path);
+
     int (*x509_show_info)(X509 *x);
 };
 
 struct pkey_method_st {
 
-    int (*pkey_new)(EVP_PKEY *pkey, EVP_PKEY *m_pkey, void *rngctx);
+    int (*pkey_new)(EVP_PKEY *pkey, EVP_PKEY *m_pkey);
 
     void (*pkey_free)(EVP_PKEY *pkey);
 

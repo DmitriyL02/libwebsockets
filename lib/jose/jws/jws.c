@@ -588,6 +588,53 @@ lws_jws_sig_confirm(struct lws_jws_map *map_b64, struct lws_jws_map *map,
 
 		break;
 
+	case LWS_JOSE_ENCTYPE_EDDSA:
+	{
+		uint8_t *in;
+		size_t in_len;
+
+		if (jwk->kty != LWS_GENCRYPTO_KTY_OKP)
+			return -1;
+
+		if (!jwk->e[LWS_GENCRYPTO_OKP_KEYEL_CRV].buf)
+			return -1;
+
+		if (lws_geneddsa_create(&ecdsactx, context, NULL)) {
+			lwsl_notice("%s: lws_geneddsa_create\n", __func__);
+			return -1;
+		}
+
+		if (lws_geneddsa_set_key(&ecdsactx, jwk->e)) {
+			lws_genec_destroy(&ecdsactx);
+			lwsl_notice("%s: eddsa key import fail\n", __func__);
+			return -1;
+		}
+
+		in_len = map_b64->len[LJWS_JOSE] + 1 + map_b64->len[LJWS_PYLD];
+		in = lws_malloc(in_len, "jws eddsa in");
+		if (!in) {
+			lws_genec_destroy(&ecdsactx);
+			return -1;
+		}
+
+		memcpy(in, map_b64->buf[LJWS_JOSE], map_b64->len[LJWS_JOSE]);
+		in[map_b64->len[LJWS_JOSE]] = '.';
+		memcpy(in + map_b64->len[LJWS_JOSE] + 1, map_b64->buf[LJWS_PYLD], map_b64->len[LJWS_PYLD]);
+
+		n = lws_geneddsa_hash_sig_verify_jws(&ecdsactx, in, in_len,
+						  (uint8_t *)map->buf[LJWS_SIG],
+						     map->len[LJWS_SIG]);
+		lws_genec_destroy(&ecdsactx);
+		lws_free(in);
+
+		if (n < 0) {
+			lwsl_notice("%s: verify fail\n", __func__);
+			return -1;
+		}
+
+		break;
+	}
+
 	case LWS_JOSE_ENCTYPE_ECDSA:
 
 		/* ECDSA using SHA-256/384/512 */
@@ -753,6 +800,7 @@ lws_jws_sign_from_b64(struct lws_jose *jose, struct lws_jws *jws,
 	enum enum_genrsa_mode pad = LGRSAM_PKCS1_1_5;
 	uint8_t digest[LWS_GENHASH_LARGEST];
 	struct lws_genhash_ctx hash_ctx;
+	struct lws_genhmac_ctx hmac_ctx;
 	struct lws_genec_ctx ecdsactx;
 	struct lws_genrsa_ctx rsactx;
 	uint8_t *buf;
@@ -763,13 +811,39 @@ lws_jws_sign_from_b64(struct lws_jose *jose, struct lws_jws *jws,
 	    !strcmp(jose->alg->alg, "none"))
 		return 0;
 
-	if (lws_genhash_init(&hash_ctx, jose->alg->hash_type) ||
-	    lws_genhash_update(&hash_ctx, jws->map_b64.buf[LJWS_JOSE],
+	if (jose->alg->algtype_signing == LWS_JOSE_ENCTYPE_NONE) {
+		if (jws->jwk->kty != LWS_GENCRYPTO_KTY_OCT) {
+			lwsl_err("%s: kty not OCT for HMAC\n", __func__);
+			return -1;
+		}
+
+		if (lws_genhmac_init(&hmac_ctx, jose->alg->hmac_type,
+				     jws->jwk->e[LWS_GENCRYPTO_OCT_KEYEL_K].buf,
+				     jws->jwk->e[LWS_GENCRYPTO_OCT_KEYEL_K].len) ||
+		    lws_genhmac_update(&hmac_ctx, jws->map_b64.buf[LJWS_JOSE],
+				       jws->map_b64.len[LJWS_JOSE]) ||
+		    lws_genhmac_update(&hmac_ctx, ".", 1) ||
+		    lws_genhmac_update(&hmac_ctx, jws->map_b64.buf[LJWS_PYLD],
+				       jws->map_b64.len[LJWS_PYLD]) ||
+		    lws_genhmac_destroy(&hmac_ctx, digest)) {
+			lws_genhmac_destroy(&hmac_ctx, NULL);
+			lwsl_err("%s: hmac fail\n", __func__);
+			return -1;
+		}
+
+		return lws_jws_base64_enc((char *)digest,
+					  lws_genhmac_size(jose->alg->hmac_type),
+					  b64_sig, sig_len);
+	}
+
+	if (jose->alg->algtype_signing != LWS_JOSE_ENCTYPE_EDDSA &&
+	    (lws_genhash_init(&hash_ctx, jose->alg->hash_type) ||
+	     lws_genhash_update(&hash_ctx, jws->map_b64.buf[LJWS_JOSE],
 					  jws->map_b64.len[LJWS_JOSE]) ||
-	    lws_genhash_update(&hash_ctx, ".", 1) ||
-	    lws_genhash_update(&hash_ctx, jws->map_b64.buf[LJWS_PYLD],
+	     lws_genhash_update(&hash_ctx, ".", 1) ||
+	     lws_genhash_update(&hash_ctx, jws->map_b64.buf[LJWS_PYLD],
 					  jws->map_b64.len[LJWS_PYLD]) ||
-	    lws_genhash_destroy(&hash_ctx, digest)) {
+	     lws_genhash_destroy(&hash_ctx, digest))) {
 		lws_genhash_destroy(&hash_ctx, NULL);
 
 		return -1;
@@ -815,10 +889,68 @@ lws_jws_sign_from_b64(struct lws_jose *jose, struct lws_jws *jws,
 
 		return n;
 
-	case LWS_JOSE_ENCTYPE_NONE:
-		return lws_jws_base64_enc((char *)digest,
-					 lws_genhash_size(jose->alg->hash_type),
-					  b64_sig, sig_len);
+	case LWS_JOSE_ENCTYPE_EDDSA:
+	{
+		uint8_t *in;
+		size_t in_len;
+
+		if (jws->jwk->kty != LWS_GENCRYPTO_KTY_OKP)
+			return -1;
+
+		if (!jws->jwk->e[LWS_GENCRYPTO_OKP_KEYEL_CRV].buf)
+			return -1;
+
+		if (!jws->jwk->e[LWS_GENCRYPTO_OKP_KEYEL_X].buf ||
+		    !jws->jwk->e[LWS_GENCRYPTO_OKP_KEYEL_D].buf)
+			return -1;
+
+		if (lws_geneddsa_create(&ecdsactx, jws->context, NULL)) {
+			lwsl_notice("%s: lws_geneddsa_create\n", __func__);
+			return -1;
+		}
+
+		if (lws_geneddsa_set_key(&ecdsactx, jws->jwk->e)) {
+			lws_genec_destroy(&ecdsactx);
+			lwsl_notice("%s: eddsa key import fail\n", __func__);
+			return -1;
+		}
+
+		in_len = jws->map_b64.len[LJWS_JOSE] + 1 + jws->map_b64.len[LJWS_PYLD];
+		in = lws_malloc(in_len, "jws eddsa in");
+		if (!in) {
+			lws_genec_destroy(&ecdsactx);
+			return -1;
+		}
+
+		memcpy(in, jws->map_b64.buf[LJWS_JOSE], jws->map_b64.len[LJWS_JOSE]);
+		in[jws->map_b64.len[LJWS_JOSE]] = '.';
+		memcpy(in + jws->map_b64.len[LJWS_JOSE] + 1, jws->map_b64.buf[LJWS_PYLD], jws->map_b64.len[LJWS_PYLD]);
+
+		/* exact size doesn't matter as long as it handles max (114 for ed448, 64 for ed25519) */
+		m = 128;
+		buf = lws_malloc((unsigned int)m, "jws eddsa sign");
+		if (!buf) {
+			lws_genec_destroy(&ecdsactx);
+			lws_free(in);
+			return -1;
+		}
+
+		n = lws_geneddsa_hash_sign_jws(&ecdsactx, in, (size_t)in_len, buf, (size_t)m);
+		lws_genec_destroy(&ecdsactx);
+		lws_free(in);
+
+		if (n < 0) {
+			lws_free(buf);
+			lwsl_notice("%s: lws_geneddsa_hash_sign_jws fail\n", __func__);
+			return -1;
+		}
+
+		n = lws_jws_base64_enc((char *)buf, (unsigned int)n, b64_sig, sig_len);
+		lws_free(buf);
+
+		return n;
+	}
+
 	case LWS_JOSE_ENCTYPE_ECDSA:
 		/* ECDSA using SHA-256/384/512 */
 
@@ -1079,7 +1211,7 @@ static int lws_jwt_vsign_via_info(struct lws_context *ctx, struct lws_jwk *jwk,
 	if (lws_jws_alloc_element(&jws.map, LJWS_JOSE, info->temp, &tlr,
 				  actual_hdr_len, 0)) {
 		lwsl_err("%s: temp space too small\n", __func__);
-		goto bail;
+		r = __LINE__; goto bail;
 	}
 
 	if (!info->jose_hdr) {
@@ -1087,8 +1219,7 @@ static int lws_jwt_vsign_via_info(struct lws_context *ctx, struct lws_jwk *jwk,
 		/* get algorithm from 'alg' string and write minimal JOSE header */
 		if (lws_gencrypto_jws_alg_to_definition(info->alg, &jose.alg)) {
 			lwsl_err("%s: unknown alg %s\n", __func__, info->alg);
-
-			goto bail;
+			r = __LINE__; goto bail;
 		}
 		jws.map.len[LJWS_JOSE] = (uint32_t)lws_snprintf(
 				(char *)jws.map.buf[LJWS_JOSE], (size_t)otl,
@@ -1102,7 +1233,7 @@ static int lws_jwt_vsign_via_info(struct lws_context *ctx, struct lws_jwk *jwk,
 		if (lws_jws_parse_jose(&jose, info->jose_hdr,
 				       (int)actual_hdr_len, info->temp, &tlr)) {
 			lwsl_err("%s: invalid jose header\n", __func__);
-			goto bail;
+			r = __LINE__; goto bail;
 		}
 		tlr = otl;
 		memcpy((char *)jws.map.buf[LJWS_JOSE], info->jose_hdr,
@@ -1117,12 +1248,14 @@ static int lws_jwt_vsign_via_info(struct lws_context *ctx, struct lws_jwk *jwk,
 	va_copy(ap_cpy, ap);
 	n = vsnprintf(NULL, 0, format, ap_cpy);
 	va_end(ap_cpy);
-	if (n + 2 >= tlr)
-		goto bail;
+	if (n + 2 >= tlr) {
+		r = __LINE__; goto bail;
+	}
 
 	q = lws_malloc((unsigned int)n + 2, __func__);
-	if (!q)
-		goto bail;
+	if (!q) {
+		r = __LINE__; goto bail;
+	}
 
 	vsnprintf(q, (unsigned int)n + 2, format, ap);
 
@@ -1133,8 +1266,9 @@ static int lws_jwt_vsign_via_info(struct lws_context *ctx, struct lws_jwk *jwk,
 
 	if (lws_jws_encode_b64_element(&jws.map_b64, LJWS_PYLD, p, &tlr,
 				       jws.map.buf[LJWS_PYLD],
-				       jws.map.len[LJWS_PYLD]))
-		goto bail1;
+				       jws.map.len[LJWS_PYLD])) {
+		r = __LINE__; goto bail1;
+	}
 
 	p += otl - tlr;
 	otl = tlr;
@@ -1143,8 +1277,9 @@ static int lws_jwt_vsign_via_info(struct lws_context *ctx, struct lws_jwk *jwk,
 
 	if (lws_jws_encode_b64_element(&jws.map_b64, LJWS_JOSE, p, &tlr,
 				       jws.map.buf[LJWS_JOSE],
-				       jws.map.len[LJWS_JOSE]))
-		goto bail1;
+				       jws.map.len[LJWS_JOSE])) {
+		r = __LINE__; goto bail1;
+	}
 
 	p += otl - tlr;
 	otl = tlr;
@@ -1153,23 +1288,26 @@ static int lws_jwt_vsign_via_info(struct lws_context *ctx, struct lws_jwk *jwk,
 
 	if (lws_jws_alloc_element(&jws.map_b64, LJWS_SIG, p, &tlr,
 				  (size_t)lws_base64_size(LWS_JWE_LIMIT_KEY_ELEMENT_BYTES),
-				  0))
-		goto bail1;
+				  0)) {
+		r = __LINE__; goto bail1;
+	}
 
 	/* sign the plaintext */
 
 	n = lws_jws_sign_from_b64(&jose, &jws,
 				  (char *)jws.map_b64.buf[LJWS_SIG],
 				  jws.map_b64.len[LJWS_SIG]);
-	if (n < 0)
-		goto bail1;
+	if (n < 0) {
+		r = __LINE__; goto bail1;
+	}
 
 	/* set the actual b64 signature size */
 	jws.map_b64.len[LJWS_SIG] = (uint32_t)n;
 
 	/* create the compact JWS representation */
-	if (lws_jws_write_compact(&jws, info->out, *info->out_len))
-		goto bail1;
+	if (lws_jws_write_compact(&jws, info->out, *info->out_len)) {
+		r = __LINE__; goto bail1;
+	}
 
 	*info->out_len = strlen(info->out);
 
@@ -1267,12 +1405,12 @@ lws_jwt_token_sanity(const char *in, size_t in_len,
 	 * ... and not too late for it?
 	 */
 	cp = lws_json_simple_find(in, in_len, "\"exp\":", &len);
-	exp = (unsigned long)atol(cp);
 	if (!cp || (unsigned long)atol(cp) < now) {
 		lwsl_notice("%s: exp fail %lu vs %lu\n", __func__,
 				cp ? (unsigned long)atol(cp) : 0, now);
 		return 1;
 	}
+	exp = (unsigned long)atol(cp);
 
 	/*
 	 * Caller cares about subject?  Then we must have it, and it can't be

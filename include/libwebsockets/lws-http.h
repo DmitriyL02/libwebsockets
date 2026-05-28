@@ -54,6 +54,20 @@ LWS_VISIBLE LWS_EXTERN const char *
 lws_get_mimetype(const char *file, const struct lws_http_mount *m);
 
 /**
+ * lws_find_mount() - Find the mount context for a URI
+ *
+ * \param wsi:		wsi context
+ * \param uri_ptr:	pointer to the URI
+ * \param uri_len:	length of the URI
+ *
+ * Returns NULL or a pointer to the matching mount.
+ */
+#if defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2)
+LWS_VISIBLE LWS_EXTERN const struct lws_http_mount *
+lws_find_mount(struct lws *wsi, const char *uri_ptr, int uri_len);
+#endif
+
+/**
  * lws_serve_http_file() - Send a file back to the client using http
  * \param wsi:		Websocket instance (available from user callback)
  * \param file:		The file to issue over http
@@ -436,7 +450,7 @@ lws_hdr_copy(struct lws *wsi, char *dest, int len, enum lws_token_indexes h);
 /**
  * lws_hdr_copy_fragment() - copy a single fragment of the given header to a buffer
  *		The buffer length len must include space for an additional
- *		terminating '\0', or it will fail returning -1.
+ *		terminating '\0', or it will fail returning -2.
  *		If the requested fragment index is not present, it fails
  *		returning -1.
  *
@@ -520,8 +534,11 @@ lws_hdr_custom_name_foreach(struct lws *wsi, lws_hdr_custom_fe_cb_t cb, void *op
  *
  * \param wsi: the connection to check
  * \param name: the arg name, like "token" or "token="
- * \param buf: the buffer to receive the urlarg (including the name= part)
- * \param len: the length of the buffer to receive the urlarg
+ * \param buf: the buffer to receive the urlarg value only (the name= prefix is
+ *             stripped from the result via memmove); buf must be large enough
+ *             for the full "name=value" fragment plus 2 bytes, because the
+ *             check is fraglen + 1 < len
+ * \param len: the length of buf
  *
  * Returns -1 if not present, else the length of y in the urlarg name=y.  If
  * zero or greater, then buf contains a copy of the string y.  Any = after the
@@ -544,8 +561,11 @@ lws_get_urlarg_by_name_safe(struct lws *wsi, const char *name, char *buf, int le
  *
  * \param wsi: the connection to check
  * \param name: the arg name, like "token="
- * \param buf: the buffer to receive the urlarg (including the name= part)
- * \param len: the length of the buffer to receive the urlarg
+ * \param buf: the buffer to receive the urlarg value only (the name= prefix is
+ *             stripped from the result via memmove); buf must be large enough
+ *             for the full "name=value" fragment plus 2 bytes, because the
+ *             check is fraglen + 1 < len
+ * \param len: the length of buf
  *
  *     Returns NULL if not found or a pointer inside buf to just after the
  *     name= part.
@@ -559,6 +579,39 @@ lws_get_urlarg_by_name_safe(struct lws *wsi, const char *name, char *buf, int le
 LWS_VISIBLE LWS_EXTERN const char *
 lws_get_urlarg_by_name(struct lws *wsi, const char *name, char *buf, int len)
 /* LWS_WARN_DEPRECATED */;
+
+/**
+ * lws_http_remove_urlarg() - remove a named urlarg from the header table
+ *
+ * \param wsi: the connection to check
+ * \param name: the arg name to remove, eg "token" or "token="
+ *
+ * This removes the named argument from the WSI_TOKEN_HTTP_URI_ARGS fragment
+ * chain in the header table (ah).  It does not reclaim space in the ah data
+ * area, but the argument will no longer be visible to subsequent protocols
+ * handling the same wsi.
+ *
+ * Returns 0 if removed, else nonzero.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_http_remove_urlarg(struct lws *wsi, const char *name);
+
+/**
+ * lws_http_zap_header() - remove a named header from the header table
+ *
+ * \param wsi: the connection to check
+ * \param name: the header name to remove, eg "X-Auth-User"
+ *
+ * This removes the named header from the header table (ah). It handles both
+ * recognized tokens and unknown custom headers. Note that it does not reclaim
+ * space in the ah data area, but the header will no longer be visible to
+ * subsequent protocols or forwarded during proxying.
+ *
+ * Returns 0 if removed or not found, else nonzero.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_http_zap_header(struct lws *wsi, const char *name);
+
 ///@}
 
 /*! \defgroup HTTP-headers-create HTTP headers: create

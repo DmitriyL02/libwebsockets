@@ -15,14 +15,36 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_EV,
+	LWS_SW_EVENT,
+	LWS_SW_GLIB,
+	LWS_SW_UV,
+	LWS_SW_D,
+	LWS_SW_S,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_EV]	= { "--ev",            "Enable --ev feature" },
+	[LWS_SW_EVENT]	= { "--event",         "Enable --event feature" },
+	[LWS_SW_GLIB]	= { "--glib",          "Enable --glib feature" },
+	[LWS_SW_UV]	= { "--uv",            "Enable --uv feature" },
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_S]	= { "-s",              "Use TLS / https" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 
-#define LWS_PLUGIN_STATIC
-#include "../../../plugins/protocol_lws_mirror.c"
-#include "../../../plugins/protocol_lws_status.c"
-#include "../../../plugins/protocol_dumb_increment.c"
-#include "../../../plugins/protocol_post_demo.c"
+#if defined(LWS_WITH_PLUGINS)
+static const char * const plugin_dirs[] = {
+	LWS_PLUGIN_DIR "/",
+	NULL
+};
+#endif
 
 static struct lws_context *context;
 
@@ -30,10 +52,6 @@ static struct lws_protocols protocols[] = {
 	/* first protocol must always be HTTP handler */
 
 	{ "http-only", lws_callback_http_dummy, 0, 0, 0, NULL, 0 },
-	LWS_PLUGIN_PROTOCOL_DUMB_INCREMENT,
-	LWS_PLUGIN_PROTOCOL_MIRROR,
-	LWS_PLUGIN_PROTOCOL_LWS_STATUS,
-	LWS_PLUGIN_PROTOCOL_POST_DEMO,
 	LWS_PROTOCOL_LIST_TERM
 };
 
@@ -42,83 +60,31 @@ static struct lws_protocols protocols[] = {
  */
 
 static const struct lws_http_mount mount_ziptest_uncomm = {
-	NULL,			/* linked-list pointer to next*/
-	"/uncommziptest",		/* mountpoint in URL namespace on this vhost */
-	"./mount-origin/candide-uncompressed.zip",	/* handler */
-	NULL,	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_FILE,	/* origin points to a callback */
-	14,			/* strlen("/ziptest"), ie length of the mountpoint */
-	NULL,
+	.mountpoint		= "/uncommziptest",		/* mountpoint in URL namespace on this vhost */
+	.origin			= "./mount-origin/candide-uncompressed.zip",	/* handler */
+	.origin_protocol	= LWSMPRO_FILE,	/* origin points to a file */
+	.mountpoint_len		= 14,			/* strlen("/ziptest"), ie length of the mountpoint */
 }, mount_ziptest = {
-	(struct lws_http_mount *)&mount_ziptest_uncomm,			/* linked-list pointer to next*/
-	"/ziptest",		/* mountpoint in URL namespace on this vhost */
-	"./mount-origin/candide.zip",	/* handler */
-	NULL,	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_FILE,	/* origin points to a callback */
-	8,			/* strlen("/ziptest"), ie length of the mountpoint */
-	NULL,
+	.mount_next		= (struct lws_http_mount *)&mount_ziptest_uncomm,			/* linked-list pointer to next*/
+	.mountpoint		= "/ziptest",		/* mountpoint in URL namespace on this vhost */
+	.origin			= "./mount-origin/candide.zip",	/* handler */
+	.origin_protocol	= LWSMPRO_FILE,	/* origin points to a file */
+	.mountpoint_len		= 8,			/* strlen("/ziptest"), ie length of the mountpoint */
 
 }, mount_post = {
-	(struct lws_http_mount *)&mount_ziptest, /* linked-list pointer to next*/
-	"/formtest",		/* mountpoint in URL namespace on this vhost */
-	"protocol-post-demo",	/* handler */
-	NULL,	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_CALLBACK,	/* origin points to a callback */
-	9,			/* strlen("/formtest"), ie length of the mountpoint */
-	NULL,
+	.mount_next		= (struct lws_http_mount *)&mount_ziptest, /* linked-list pointer to next*/
+	.mountpoint		= "/formtest",		/* mountpoint in URL namespace on this vhost */
+	.origin			= "protocol-post-demo",	/* handler */
+	.origin_protocol	= LWSMPRO_CALLBACK,	/* origin points to a callback */
+	.mountpoint_len		= 9,			/* strlen("/formtest"), ie length of the mountpoint */
 
 }, mount = {
-	/* .mount_next */		&mount_post,	/* linked-list "next" */
-	/* .mountpoint */		"/",		/* mountpoint URL */
-	/* .origin */			"./mount-origin", /* serve from dir */
-	/* .def */			"test.html",	/* default filename */
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
-	/* .mountpoint_len */		1,		/* char count */
-	/* .basic_auth_login_file */	NULL,
+	.mount_next		= &mount_post,		/* linked-list "next" */
+	.mountpoint		= "/",			/* mountpoint URL */
+	.origin			= "./mount-origin",	/* serve from dir */
+	.def			= "test.html",		/* default filename */
+	.origin_protocol	= LWSMPRO_FILE,		/* files in a dir */
+	.mountpoint_len		= 1,			/* char count */
 };
 
 void signal_cb(void *handle, int signum)
@@ -152,8 +118,15 @@ int main(int argc, const char **argv)
 			/* | LLL_INFO */ /* | LLL_PARSER */ /* | LLL_HEADER */
 			/* | LLL_EXT */ /* | LLL_CLIENT */ /* | LLL_LATENCY */
 			/* | LLL_DEBUG */;
+	(void)switches;
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
+
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
@@ -166,11 +139,14 @@ int main(int argc, const char **argv)
 	info.error_document_404 = "/404.html";
 	info.pcontext = &context;
 	info.protocols = protocols;
+#if defined(LWS_WITH_PLUGINS)
+	info.plugin_dirs = plugin_dirs;
+#endif
 	info.signal_cb = signal_cb;
 	info.options =
 		LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
 
-	if (lws_cmdline_option(argc, argv, "-s")) {
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_S].sw)) {
 		info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 #if defined(LWS_WITH_TLS)
 		info.ssl_cert_filepath = "localhost-100y.cert";
@@ -178,16 +154,16 @@ int main(int argc, const char **argv)
 #endif
 	}
 
-	if (lws_cmdline_option(argc, argv, "--uv"))
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_UV].sw))
 		info.options |= LWS_SERVER_OPTION_LIBUV;
 	else
-		if (lws_cmdline_option(argc, argv, "--event"))
+		if (lws_cmdline_option(argc, argv, switches[LWS_SW_EVENT].sw))
 			info.options |= LWS_SERVER_OPTION_LIBEVENT;
 		else
-			if (lws_cmdline_option(argc, argv, "--ev"))
+			if (lws_cmdline_option(argc, argv, switches[LWS_SW_EV].sw))
 				info.options |= LWS_SERVER_OPTION_LIBEV;
 			else
-				if (lws_cmdline_option(argc, argv, "--glib"))
+				if (lws_cmdline_option(argc, argv, switches[LWS_SW_GLIB].sw))
 					info.options |= LWS_SERVER_OPTION_GLIB;
 				else
 					signal(SIGINT, sigint_handler);
@@ -195,6 +171,11 @@ int main(int argc, const char **argv)
 	context = lws_create_context(&info);
 	if (!context) {
 		lwsl_err("lws init failed\n");
+		return 1;
+	}
+
+	if (!lws_vhost_name_to_protocol(lws_get_vhost_by_name(context, "default"), "protocol-post-demo")) {
+		lwsl_err("protocol-post-demo plugin required\n");
 		return 1;
 	}
 

@@ -17,6 +17,19 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_PORT,
+	LWS_SW_H,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_PORT]	= { "--port",          "Port to connect or listen on" },
+	[LWS_SW_H]	= { "-h",              "Strict Host Check / Help" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 #include <errno.h>
@@ -25,7 +38,7 @@ static int interrupted;
 
 #if defined(LWS_WITH_PLUGINS)
 static const char * const plugin_dirs[] = {
-	LWS_INSTALL_DATADIR"/libwebsockets-test-server/plugins/",
+	LWS_PLUGIN_DIR "/",
 	NULL
 };
 #endif
@@ -33,49 +46,24 @@ static const char * const plugin_dirs[] = {
 static const struct lws_http_mount
 #if defined(LWS_WITH_SYS_METRICS)
 	mount_metrics = {
-	/* .mount_next */		NULL,		/* linked-list "next" */
-	/* .mountpoint */		"/metrics",		/* mountpoint URL */
-	/* .origin */			"lws-openmetrics", /* serve from dir */
-	/* .def */			"x",	/* default filename */
-	/* .protocol */			"lws-openmetrics",
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_CALLBACK, /* bind to callback */
-	/* .mountpoint_len */		8,		/* char count */
-	/* .basic_auth_login_file */	NULL,
+	.mountpoint		= "/metrics",		/* mountpoint URL */
+	.origin			= "lws-openmetrics",	/* serve from dir */
+	.def			= "x",			/* default filename */
+	.protocol		= "lws-openmetrics",
+	.origin_protocol	= LWSMPRO_CALLBACK,	/* bind to callback */
+	.mountpoint_len		= 8,			/* char count */
 	},
 #endif
 	mount = {
 #if defined(LWS_WITH_SYS_METRICS)
-	/* .mount_next */		&mount_metrics,		/* linked-list "next" */
-#else
-	/* .mount_next */		NULL,		/* linked-list "next" */
+	.mount_next		= &mount_metrics,	/* linked-list "next" */
 #endif
-	/* .mountpoint */		"/",		/* mountpoint URL */
-	/* .origin */			"./mount-origin", /* serve from dir */
-	/* .def */			"index.html",	/* default filename */
-	/* .protocol */			"http-only",
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */			0,
-	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
-	/* .mountpoint_len */		1,		/* char count */
-	/* .basic_auth_login_file */	NULL,
+	.mountpoint		= "/",			/* mountpoint URL */
+	.origin			= "./mount-origin",	/* serve from dir */
+	.def			= "index.html",		/* default filename */
+	.protocol		= "http-only",
+	.origin_protocol	= LWSMPRO_FILE,		/* files in a dir */
+	.mountpoint_len		= 1,			/* char count */
 };
 
 #if !defined(WIN32)
@@ -103,6 +91,13 @@ int main(int argc, const char **argv)
 	int n = 0;
 
 #if !defined(WIN32)
+	(void)switches;
+
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
 	memset(&siga, 0, sizeof(siga));
 	siga.sa_sigaction = sigint_handler;
 	siga.sa_flags |= SA_SIGINFO; // get detail info
@@ -120,7 +115,7 @@ int main(int argc, const char **argv)
 	lwsl_user("LWS minimal http server TLS | visit https://localhost:7681\n");
 
 	info.port = 7681;
-	if ((p = lws_cmdline_option(argc, argv, "--port")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_PORT].sw)))
 		info.port = atoi(p);
 	info.mounts = &mount;
 	info.error_document_404 = "/404.html";
@@ -134,7 +129,7 @@ int main(int argc, const char **argv)
 	info.plugin_dirs = plugin_dirs;
 #endif
 
-	if (lws_cmdline_option(argc, argv, "-h"))
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_H].sw))
 		info.options |= LWS_SERVER_OPTION_VHOST_UPG_STRICT_HOST_CHECK;
 
 	context = lws_create_context(&info);

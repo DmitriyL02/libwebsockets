@@ -74,7 +74,7 @@ pennies(const char *s)
 {
 	uint64_t price = (uint64_t)atoll(s) * 100;
 
-	s = strchr(s, '.');
+	s = (char *)strchr(s, '.');
 
 	if (s && isdigit(s[1]) && isdigit(s[2]))
 		price = price + (uint64_t)((10 * (s[1] - '0')) + (s[2] - '0'));
@@ -175,8 +175,8 @@ binance_state(void *userobj, void *h_src, lws_ss_constate_t state,
 {
 	binance_t *bin = (binance_t *)userobj;
 
-	lwsl_ss_info(bin->ss, "%s (%d), ord 0x%x",
-		     lws_ss_state_name((int)state), state, (unsigned int)ack);
+	lwsl_ss_info(bin->ss, "%s, ord 0x%x",
+		     lws_ss_state_name(state), (unsigned int)ack);
 
 	switch (state) {
 

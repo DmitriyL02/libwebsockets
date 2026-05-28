@@ -120,6 +120,7 @@ __lws_reset_wsi(struct lws *wsi)
 	}
 #endif
 	wsi->retry = 0;
+	wsi->mount_hit = 0;
 
 #if defined(LWS_WITH_CLIENT)
 	lws_dll2_remove(&wsi->dll2_cli_txn_queue);
@@ -135,6 +136,13 @@ __lws_reset_wsi(struct lws *wsi)
 #if defined(LWS_WITH_HTTP_PROXY)
 	if (wsi->http.buflist_post_body)
 		lws_buflist_destroy_all_segments(&wsi->http.buflist_post_body);
+#endif
+
+#if defined(LWS_WITH_HTTP_DIGEST_AUTH)
+	if (wsi->http.digest_auth_hdr) {
+		lws_free(wsi->http.digest_auth_hdr);
+		wsi->http.digest_auth_hdr = NULL;
+	}
 #endif
 
 #if defined(LWS_WITH_SERVER)
@@ -159,7 +167,7 @@ __lws_reset_wsi(struct lws *wsi)
 
 	/* since we will destroy the wsi, make absolutely sure now */
 
-#if defined(LWS_WITH_OPENSSL)
+#if defined(LWS_WITH_TLS)
 	__lws_ssl_remove_wsi_from_buffered_list(wsi);
 #endif
 	__lws_wsi_remove_from_sul(wsi);
@@ -213,6 +221,9 @@ __lws_free_wsi(struct lws *wsi)
 
 	lws_context_assert_lock_held(wsi->a.context);
 
+	/* just in case */
+	lws_dll2_remove(&wsi->pre_natal);
+
 #if defined(LWS_WITH_SECURE_STREAMS)
 	if (wsi->for_ss) {
 
@@ -264,6 +275,8 @@ __lws_free_wsi(struct lws *wsi)
 	/* confirm no sul left scheduled in wsi itself */
 	lws_sul_debug_zombies(wsi->a.context, wsi, sizeof(*wsi), __func__);
 
+	wsi->socket_is_permanently_unusable = 1; // !!!
+
 	__lws_lc_untag(wsi->a.context, &wsi->lc);
 	lws_free(wsi);
 }
@@ -313,7 +326,7 @@ lws_inform_client_conn_fail(struct lws *wsi, void *arg, size_t len)
 
 	wsi->already_did_cce = 1;
 
-	if (!wsi->a.protocol)
+	if (!wsi->a.protocol || (wsi->a.context && wsi->a.context->being_destroyed))
 		return;
 
 	if (!wsi->client_suppress_CONNECTION_ERROR)
@@ -340,6 +353,37 @@ lws_addrinfo_clean(struct lws *wsi)
 	}
 #endif
 }
+
+#if defined(LWS_WITH_ASYNC_QUEUE)
+static void
+lws_async_worker_wait_and_reap(struct lws *wsi)
+{
+	while (1) {
+		pthread_mutex_lock(&wsi->a.context->async_worker_mutex);
+		if (!wsi->async_worker_job) {
+			pthread_mutex_unlock(&wsi->a.context->async_worker_mutex);
+			break;
+		}
+		struct lws_async_job *job = wsi->async_worker_job;
+		if (job->list.owner == &wsi->a.context->async_worker_waiting ||
+		    job->list.owner == &wsi->a.context->async_worker_finished ||
+		    job->handled_by_main) {
+			/* Not actively running. We can safely detach it and reap it. */
+			wsi->async_worker_job = NULL;
+			lws_dll2_remove(&job->list);
+			lws_free(job);
+			pthread_mutex_unlock(&wsi->a.context->async_worker_mutex);
+			break;
+		}
+		pthread_mutex_unlock(&wsi->a.context->async_worker_mutex);
+		/* The background thread is actively modifying this WSI or its SSL contexts.
+		 * It is catastrophic to continue closing or freeing this WSI until it is done.
+		 * Because this happens very infrequently (shutdown collisions), we briefly yield.
+		 */
+		usleep(1000);
+	}
+}
+#endif
 
 /* requires cx and pt lock */
 
@@ -369,8 +413,18 @@ __lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason,
 	context = wsi->a.context;
 	pt = &context->pt[(int)wsi->tsi];
 
-	if (pt->pipe_wsi == wsi)
+	if (pt->pipe_wsi == wsi) {
+		if (lws_socket_is_valid(wsi->desc.sockfd)) {
+			__remove_wsi_socket_from_fds(wsi);
+			if (lws_socket_is_valid(wsi->desc.sockfd))
+				delete_from_fd(wsi->a.context, wsi->desc.sockfd);
+#if !defined(LWS_PLAT_FREERTOS) && !defined(WIN32) && !defined(LWS_PLAT_OPTEE)
+			delete_from_fdwsi(wsi->a.context, wsi);
+#endif
+		}
+		lws_plat_pipe_close(pt->pipe_wsi);
 		pt->pipe_wsi = NULL;
+	}
 
 #if defined(LWS_WITH_SYS_METRICS) && \
     (defined(LWS_WITH_CLIENT) || defined(LWS_WITH_SERVER))
@@ -400,6 +454,9 @@ __lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason,
 	lws_pt_assert_lock_held(pt);
 
 #if defined(LWS_WITH_CLIENT)
+#if defined(LWS_WITH_TLS_SESSIONS) && defined(LWS_WITH_GNUTLS)
+	lws_tls_session_new_gnutls(wsi);
+#endif
 
 	lws_free_set_NULL(wsi->cli_hostname_copy);
 	wsi->client_mux_substream_was = wsi->client_mux_substream;
@@ -473,6 +530,10 @@ __lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason,
 #if defined(LWS_WITH_CLIENT)
 	if (!wsi->close_is_redirect)
 		lws_free_set_NULL(wsi->stash);
+#endif
+
+#if defined(LWS_WITH_ASYNC_QUEUE)
+	lws_async_worker_wait_and_reap(wsi);
 #endif
 
 	if (wsi->role_ops == &role_ops_raw_skt) {
@@ -574,6 +635,7 @@ just_kill_connection:
 	lws_threadpool_wsi_closing(wsi);
 #endif
 
+
 #if defined(LWS_WITH_FILE_OPS) && (defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2))
 	if (lwsi_role_http(wsi) && lwsi_role_server(wsi) &&
 	    wsi->http.fop_fd != NULL)
@@ -591,15 +653,6 @@ just_kill_connection:
 #if defined(LWS_WITH_HTTP_PROXY)
 	if (wsi->http.buflist_post_body)
 		lws_buflist_destroy_all_segments(&wsi->http.buflist_post_body);
-#endif
-#if defined(LWS_WITH_UDP)
-	if (wsi->udp) {
-		/* confirm no sul left scheduled in wsi->udp itself */
-		lws_sul_debug_zombies(wsi->a.context, wsi->udp,
-					sizeof(*wsi->udp), "close udp wsi");
-
-		lws_free_set_NULL(wsi->udp);
-	}
 #endif
 
 	if (lws_rops_fidx(wsi->role_ops, LWS_ROPS_close_kill_connection))
@@ -642,7 +695,7 @@ just_kill_connection:
 		wsi->socket_is_permanently_unusable = 1;
 
 		lws_inform_client_conn_fail(wsi,
-			(void *)_reason, sizeof(_reason));
+			(void *)_reason, sizeof(_reason) - 1);
 	}
 #endif
 
@@ -667,7 +720,6 @@ just_kill_connection:
 			case LWS_SSL_CAPABLE_ERROR:
 			case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
 			case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
-			case LWS_SSL_CAPABLE_MORE_SERVICE:
 				if (wsi->lsp_channel++ == 8) {
 					lwsl_wsi_info(wsi, "avoiding shutdown spin");
 					lwsi_set_state(wsi, LRS_SHUTDOWN);
@@ -803,7 +855,7 @@ just_kill_connection:
 		if (!wsi->a.protocol && wsi->a.vhost && wsi->a.vhost->protocols)
 			pro = &wsi->a.vhost->protocols[0];
 
-		if (pro && pro->callback && wsi->role_ops)
+		if (pro && pro->callback)
 			pro->callback(wsi,
 				wsi->role_ops->close_cb[lwsi_role_server(wsi)],
 				wsi->user_space, NULL, 0);
@@ -892,18 +944,35 @@ async_close:
 void
 __lws_close_free_wsi_final(struct lws *wsi)
 {
-	int n;
+	int n, ssl_handled = 0;
+
+#if defined(LWS_WITH_ASYNC_QUEUE)
+	lws_async_worker_wait_and_reap(wsi);
+#endif
+
+	if (!wsi->shadow)
+		ssl_handled = lws_ssl_close(wsi);
 
 	if (!wsi->shadow &&
-	    lws_socket_is_valid(wsi->desc.sockfd) && !lws_ssl_close(wsi)) {
+	    lws_socket_is_valid(wsi->desc.sockfd) && !ssl_handled) {
 		lwsl_wsi_debug(wsi, "fd %d", wsi->desc.sockfd);
-		n = compatible_close(wsi->desc.sockfd);
-		if (n)
-			lwsl_wsi_debug(wsi, "closing: close ret %d", LWS_ERRNO);
 
 		__remove_wsi_socket_from_fds(wsi);
 		if (lws_socket_is_valid(wsi->desc.sockfd))
 			delete_from_fd(wsi->a.context, wsi->desc.sockfd);
+
+		/*
+		 * if this is the pt pipe, skip the actual close,
+		 * go through the motions though so we will reach 0 open wsi
+		 * on the pt, and trigger the pt destroy to close the pipe fds
+		 */
+		if (!lws_plat_pipe_is_fd_assocated(wsi->a.context, wsi->tsi,
+						   wsi->desc.sockfd)) {
+			n = compatible_close(wsi->desc.sockfd);
+			if (n)
+				lwsl_wsi_debug(wsi, "closing: close ret %d",
+					       LWS_ERRNO);
+		}
 
 #if !defined(LWS_PLAT_FREERTOS) && !defined(WIN32) && !defined(LWS_PLAT_OPTEE)
 		delete_from_fdwsi(wsi->a.context, wsi);
@@ -921,7 +990,11 @@ __lws_close_free_wsi_final(struct lws *wsi)
 		if (pt->pipe_wsi == wsi)
 			pt->pipe_wsi = NULL;
 		if (pt->dummy_pipe_fds[0] == wsi->desc.sockfd)
+               {
+#if !defined(LWS_PLAT_FREERTOS)
 			pt->dummy_pipe_fds[0] = LWS_SOCK_INVALID;
+#endif
+               }
 	}
 
 	wsi->desc.sockfd = LWS_SOCK_INVALID;

@@ -63,6 +63,12 @@ if (LWS_WITH_NETWORK)
 			list(APPEND SOURCES plat/unix/unix-resolv.c)
 		endif()
 	endif()
+	if (LWS_WITH_SDEVENT AND LWS_HAVE_SYSTEMD_H)
+		list(APPEND SOURCES
+			plat/unix/unix-systemd.c
+		)
+		list(APPEND LIB_LIST_AT_END systemd)
+	endif()
 endif()
 	
 if (LWS_WITH_PLUGINS_API)
@@ -82,7 +88,9 @@ IF (CMAKE_SYSTEM_NAME STREQUAL Linux AND NOT LWS_WITHOUT_EVENTFD)
 	CHECK_FUNCTION_EXISTS(eventfd_read LWS_HAVE_EVENTFD)
 endif()
 
-list(APPEND LIB_LIST_AT_END m)
+if (NOT APPLE)
+	list(APPEND LIB_LIST_AT_END m)
+endif()
 
 if (ILLUMOS)
 	list(APPEND LIB_LIST_AT_END socket)

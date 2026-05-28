@@ -74,6 +74,33 @@ struct lws_genaes_ctx {
 #endif
 		mbedtls_gcm_context ctx_gcm;
 	} u;
+#elif defined(LWS_WITH_SCHANNEL)
+	struct {
+		void *hAlg;
+		void *hKey;
+		void *pbMacContext;
+		size_t cbMacContext;
+		void *pbNonce;
+		size_t cbNonce;
+		void *pbTag;
+		size_t cbTag;
+		void *pbAuthData;
+		size_t cbAuthData;
+		unsigned char iv[LWS_AES_CBC_BLOCKLEN]; /* Internal IV buffer for chaining */
+	} u;
+#elif defined(LWS_WITH_GNUTLS)
+	gnutls_cipher_hd_t ctx;
+	int gnutls_gcm_initialized;
+#elif defined(LWS_WITH_BEARSSL)
+	union {
+		br_aes_ct_cbcenc_keys cbcenc;
+		br_aes_ct_cbcdec_keys cbcdec;
+		br_aes_ct_ctr_keys ctr;
+	} u;
+	br_gcm_context gcm;
+	const br_block_cbcenc_class *cbcenc_vtable;
+	const br_block_cbcdec_class *cbcdec_vtable;
+	const br_block_ctr_class *ctr_vtable;
 #else
 	EVP_CIPHER_CTX *ctx;
 	const EVP_CIPHER *cipher;
@@ -87,9 +114,13 @@ struct lws_genaes_ctx {
 	enum enum_aes_padding padding;
 	int taglen;
 	char underway;
+#if !defined(LWS_WITH_MBEDTLS) && !defined(LWS_WITH_OPENSSL)
+	unsigned char buf[16]; /* partial block */
+	int buf_len; /* length of partial block */
+#endif
 };
 
-/** lws_genaes_create() - Create RSA public decrypt context
+/** lws_genaes_create() - Create genaes AES context
  *
  * \param ctx: your struct lws_genaes_ctx
  * \param op: LWS_GAESO_ENC or LWS_GAESO_DEC
@@ -98,7 +129,7 @@ struct lws_genaes_ctx {
  * \param padding: 0 = no padding, 1 = padding
  * \param engine: if openssl engine used, pass the pointer here
  *
- * Creates an RSA context with a public key associated with it, formed from
+ * Creates an AES context with a key associated with it, formed from
  * the key elements in \p el.
  *
  * Returns 0 for OK or nonzero for error.

@@ -1,26 +1,28 @@
 Notes about lwsws
 =================
 
-@section lwsws Libwebsockets Web Server
+## Libwebsockets Web Server
 
 lwsws is an implementation of a very lightweight, ws-capable generic web
 server, which uses libwebsockets to implement everything underneath.
 
 If you are basically implementing a standalone server with lws, you can avoid
-reinventing the wheel and use a debugged server including lws.
+reinventing the wheel and use a debugged server including lws, managed
+mainly by JSON.  You can offer most things using the mounts in JSON, but for
+custom services like ws protocols, you do this in code and then tell lwsws
+to offer the protocol on the vhost(s) desired. 
 
-
-@section lwswsb Build
+## Build
 
 Just enable -DLWS_WITH_LWSWS=1 at cmake-time.
 
 It enables libuv and plugin support automatically.
 
-NOTICE on Ubuntu, the default libuv package is called "libuv-0.10".  This is ancient.
+## Special user for lwsws
 
-You should replace this with libuv1 and libuv1-dev before proceeding.
+You can specify a user and group for lwsws to run as in the global section of the config file.  Here, I use user 48 ("apache") to run lwsws itself.  You can create such a user with `sudo useradd -u 48 -M -r apache`.
 
-@section lwswsc Lwsws Configuration
+## Lwsws Configuration
 
 lwsws uses JSON config files, they're pure JSON except:
 
@@ -79,13 +81,13 @@ on port 7681, non-SSL is provided.  To set it up
 	# sudo lwsws
 ```
 
-@section lwswsacme Using Letsencrypt or other ACME providers
+## Using Letsencrypt or other ACME providers
 
 Lws supports automatic provisioning and renewal of TLS certificates.
 
 See ./READMEs/README.plugin-acme.md for examples of how to set it up on an lwsws vhost.
 
-@section lwsogo Other Global Options
+## Other Global Options
 
  - `reject-service-keywords` allows you to return an HTTP error code and message of your choice
 if a keyword is found in the user agent
@@ -99,7 +101,7 @@ if a keyword is found in the user agent
  - `timeout-secs` lets you set the global timeout for various network-related
  operations in lws, in seconds.  It defaults to 5.
  
-@section lwswsv Lwsws Vhosts
+## Lwsws Vhosts
 
 One server can run many vhosts, where SSL is in use SNI is used to match
 the connection to a vhost and its vhost-specific SSL keys during SSL
@@ -159,7 +161,7 @@ Listing multiple vhosts looks something like this
 That sets up three vhosts all called "localhost" on ports 443 and 7681 with SSL, and port 80 without SSL but with a forced redirect to https://localhost
 
 
-@section lwswsvn Lwsws Vhost name and port sharing
+## Vhost name and port sharing
 
 The vhost name field is used to match on incoming SNI or Host: header, so it
 must always be the host name used to reach the vhost externally.
@@ -173,7 +175,7 @@ negotiation time (via SNI) or if no SSL, then after the Host: header from
 the client has been parsed.
 
 
-@section lwswspr Lwsws Protocols
+## Lwsws Protocols
 
 Vhosts by default have available the union of any initial protocols from context creation time, and
 any protocols exposed by plugins.
@@ -215,7 +217,7 @@ to be selected using "raw": "1"
 
 See also "apply-listen-accept" below.
 
-@section lwswsovo Lwsws Other vhost options
+## Lwsws Other vhost options
 
  - If the three options `host-ssl-cert`, `host-ssl-ca` and `host-ssl-key` are given, then the vhost supports SSL.
 
@@ -287,7 +289,7 @@ recommended vhost headers for good client security are
 
  - "`apply-listen-accept`": "on"  This vhost only serves a non-http protocol, specified in "listen-accept-role" and "listen-accept-protocol"
 
-@section lwswsm Lwsws Mounts
+# Lwsws Mounts
 
 Where mounts are given in the vhost definition, then directory contents may
 be auto-served if it matches the mountpoint.
@@ -338,7 +340,7 @@ This will cause your local url `/proxytest` to serve content fetched from libweb
 In addition link and src urls in the document are rewritten so / or the origin url part are rewritten to the mountpoint part.
 
 
-@section lwswsomo Lwsws Other mount options
+## Lwsws Other mount options
 
 1) Some protocols may want "per-mount options" in name:value format.  You can
 provide them using "pmo"
@@ -350,6 +352,9 @@ provide them using "pmo"
 	                "myname": "myvalue"
 	        }]
 	       }
+
+**Note on PMO vs. PVO:** Per-vhost options (PVOs) are provided to the protocol at `LWS_CALLBACK_PROTOCOL_INIT` time and are applied universally once per vhost. Per-mount options (PMOs), on the other hand, are strictly tied to specific mounts and are accessed dynamically during connection and request handling (such as inside `LWS_CALLBACK_HTTP`). Crucially, a protocol must explicitly choose to query the `lws_http_mount` structure using `lws_pmo_search` or `lws_pmo_get_str` to look for its specific PMO names in order to respect them, bypassing its globally cached PVO equivalents.
+
 
 2) When using a cgi:// protocol origin at a mountpoint, you may also give cgi environment variables specific to the mountpoint like this
 ```
@@ -449,13 +454,54 @@ a mount.
 After successful authentication, `WSI_TOKEN_HTTP_AUTHORIZATION` contains the
 authenticated username.
 
+8) You can also control the exact path matching and redirect behavior per-mount.
+
+```json
+{
+        "mountpoint": "/",
+        "origin": ">https://warmcat.com",
+        "exact-match": "1",
+        "append-path": "1"
+}
+```
+
+- `"exact-match": "1"` forces the mount to only match if the request URL is exactly the `mountpoint` (no directory prefix matching).
+- `"append-path": "1"` can be used with HTTP/HTTPS redirects (`>http://` or `>https://`). By default, redirects strictly redirect to the `origin` without appending the trailing path of the URL. Setting this flag will append the remainder of the request URL to the redirect destination.
+- `"no-ws-upgrades": "1"` instructs the router to ignore this mount if the incoming HTTP request is a WebSocket upgrade request (contains an `Upgrade:` header). This is useful to prevent WSS connections from being accidentally swallowed by a broad alias or redirect mount (e.g. `/`) when they were intended for a different, overlapping protocol.
+
 In the case you want to also protect being able to connect to a ws protocol on
 a particular vhost by requiring the http part can authenticate using Basic
 Auth before the ws upgrade, this is also possible.  In this case, the
 "basic-auth": and filepath to the credentials file is passed as a pvo in the
 "ws-protocols" section of the vhost definition.
 
-@section lwswscc Requiring a Client Cert on a vhost
+## Using mount interception
+
+The mounts in lws allow you to stack up other plugins that run "before" the main mountpoint.
+There are two "interceptor plugins" provided which can be useful for this,
+`lws_login` and `lws_captcha_ratelimit`
+
+To indicate you want to use an interceptor plugin for a mount, you add an
+"interceptor-path" entry to the original mount definition, pointing to the
+mountpoint of the interceptor plugin, like this
+
+```
+{
+        "mountpoint": "/",
+        "origin": "file:///var/www/mysite.com",
+        "interceptor-path": "/lws-login"
+},
+{
+        "mountpoint": "/lws-login",
+        "origin": "callback://lws-login"
+}
+```
+
+With this arrangement, the original mountpoint will only be visible once
+the intercepting protocol is satisfied, either by a correct login for the
+login one, or by the captcha / ratelimit one being satisfied.
+
+## Requiring a Client Cert on a vhost
 
 You can make a vhost insist to get a client certificate from the peer before
 allowing the connection with
@@ -467,7 +513,7 @@ allowing the connection with
 the connection will only proceed if the client certificate was signed by the
 same CA as the server has been told to trust.
 
-@section rawconf Configuring Fallback and Raw vhosts
+## Configuring Fallback and Raw vhosts
 
 Lws supports some unusual modes for vhost listen sockets, which may be
 configured entirely using the JSON per-vhost config language in the related
@@ -518,7 +564,7 @@ protocol "myprotocol".
 	"allow-http-on-https":		"1",
 ```
 
-@section lwswspl Lwsws Plugins
+## Lwsws Plugins
 
 Protcols and extensions may also be provided from "plugins", these are
 lightweight dynamic libraries.  They are scanned for at init time, and
@@ -545,7 +591,7 @@ To help that happen conveniently, there are some new apis
 dumb increment, mirror and status protocol plugins are provided as examples.
 
 
-@section lwswsplaplp Additional plugin search paths
+## Additional plugin search paths
 
 Packages that have their own lws plugins can install them in their own
 preferred dir and ask lwsws to scan there by using a config fragment
@@ -558,7 +604,7 @@ like this, in its own conf.d/ file managed by the other package
 	}
 ```
 
-@section lwswsssp lws-server-status plugin
+## lws-server-status plugin
 
 One provided protocol can be used to monitor the server status.
 
@@ -594,13 +640,15 @@ Linux systems by giving an appropriate path down /sys.
 This may be given multiple times.
 
 
-@section lwswsreload Lwsws Configuration Reload
+## Lwsws Configuration Reload
 
 You may send lwsws a `HUP` signal, by, eg
 
 ```
-$ sudo killall -HUP lwsws
+$ sudo systemctl reload lwsws
 ```
+
+or by sending it to the specific `lwsws` PID `kill -HUP <pid>`
 
 This causes lwsws to "deprecate" the existing lwsws process, and remove and close all of
 its listen sockets, but otherwise allowing it to continue to run, until all
@@ -637,7 +685,7 @@ etc, and lwsws or lws may also have been updated arbitrarily.
 respond to SIGHUP or SIGTERM.  Actual serving and network listening etc happens
 in child processes which use the privileges set in the lwsws config files.
 
-@section lwswssysd Lwsws Integration with Systemd
+## Lwsws Integration with Systemd
 
 lwsws needs a service file like this as `/usr/lib/systemd/system/lwsws.service`
 ```
@@ -647,8 +695,7 @@ After=syslog.target
 
 [Service]
 ExecStart=/usr/local/bin/lwsws 
-ExecReload=/usr/bin/killall -s SIGHUP lwsws ; sleep 1 ; /usr/local/bin/lwsws
-StandardError=null
+ExecReload=/usr/bin/kill -HUP $MAINPID
 
 [Install]
 WantedBy=multi-user.target
@@ -656,8 +703,10 @@ WantedBy=multi-user.target
 
 You can find this prepared in `./lwsws/usr-lib-systemd-system-lwsws.service`
 
+Note that `lwsws` natively handles `SIGTERM`, which systemd sends by default when stopping a service. This enables graceful isolated shutdown of individual `lwsws` configurations in their own control groups without requiring any manual `ExecStop` commands.
 
-@section lwswslr Lwsws Integration with logrotate
+
+## Lwsws Integration with logrotate
 
 For correct operation with logrotate, `/etc/logrotate.d/lwsws` (if that's
 where we're putting the logs) should contain
@@ -678,7 +727,7 @@ Prepare the log directory like this
 	sudo chmod 700 /var/log/lwsws
 ```
 
-@section lwswsgdb Debugging lwsws with gdb
+## Debugging lwsws with gdb
 
 Hopefully you won't need to debug lwsws itself, but you may want to debug your plugins.  start lwsws like this to have everything running under gdb
 
@@ -689,7 +738,7 @@ sudo gdb -ex "set follow-fork-mode child" -ex "run" --args /usr/local/bin/lwsws
 
 this will give nice backtraces in lwsws itself and in plugins, if they were built with symbols.
 
-@section lwswsvgd Running lwsws under valgrind
+## Running lwsws under valgrind
 
 You can just run lwsws under valgrind as usual and get valid results.  However the results / analysis part of valgrind runs
 after the plugins have removed themselves, this means valgrind backtraces into plugin code is opaque, without

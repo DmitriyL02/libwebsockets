@@ -51,14 +51,29 @@ int lws_openssl_describe_cipher(struct lws *wsi)
 int lws_ssl_get_error(struct lws *wsi, int n)
 {
 	int m;
+	unsigned long l;
+	char buf[160];
 
 	if (!wsi->tls.ssl)
 		return 99;
 
 	m = SSL_get_error(wsi->tls.ssl, n);
        lwsl_debug("%s: %p %d -> %d (errno %d)\n", __func__, wsi->tls.ssl, n, m, LWS_ERRNO);
-	if (m == SSL_ERROR_SSL)
+	if (m == SSL_ERROR_SSL) {
+		if (!wsi->tls.err_helper[0]) {
+			/* Append first error for clarity */
+			l = ERR_get_error();
+			if (l) {
+				ERR_error_string_n(LWS_TLS_ERR_CAST(l), buf, sizeof(buf) - 1);
+				buf[sizeof(buf) - 1] = '\0';
+				lws_strncpy(wsi->tls.err_helper, buf,
+					    sizeof(wsi->tls.err_helper));
+			}
+		}
+
+		// Describe other errors
 		lws_tls_err_describe_clear();
+	}
 
        // assert (LWS_ERRNO != 9);
 
@@ -178,7 +193,8 @@ lws_ssl_destroy(struct lws_vhost *vhost)
 #else
 #if OPENSSL_VERSION_NUMBER >= 0x1010005f && \
     !defined(LIBRESSL_VERSION_NUMBER) && \
-    !defined(OPENSSL_IS_BORINGSSL)
+    !defined(OPENSSL_IS_BORINGSSL) && \
+	!defined(OPENSSL_IS_AWSLC)
 	ERR_remove_thread_state();
 #else
 	ERR_remove_thread_state(NULL);
@@ -211,7 +227,18 @@ lws_ssl_capable_read(struct lws *wsi, unsigned char *buf, size_t len)
   WSASetLastError(0);
 #endif
 	ERR_clear_error();
+#if defined(LWS_WITH_LATENCY)
+	lws_usec_t _lws_start = lws_now_usecs();
+#endif
 	n = SSL_read(wsi->tls.ssl, buf, (int)(ssize_t)len);
+#if defined(LWS_WITH_LATENCY)
+	{
+		unsigned int ms = (unsigned int)((lws_now_usecs() - _lws_start) / 1000);
+		if (ms > 2) {
+			lws_latency_note(&wsi->a.context->pt[(int)wsi->tsi], _lws_start, 2000, "SSL_read:%dms", ms);
+		}
+	}
+#endif
 #if defined(LWS_PLAT_FREERTOS)
 	if (!n && errno == LWS_ENOTCONN) {
 		lwsl_debug("%s: SSL_read ENOTCONN\n", lws_wsi_tag(wsi));
@@ -250,6 +277,9 @@ lws_ssl_capable_read(struct lws *wsi, unsigned char *buf, size_t len)
 		if (m == SSL_ERROR_ZERO_RETURN) /* cleanly shut down */
 			goto do_err;
 
+		if (m == SSL_ERROR_SSL)
+		    lws_tls_err_describe_clear();
+
 		/* hm not retryable.. could be 0 size pkt or error  */
 
 		if (m == SSL_ERROR_SSL || m == SSL_ERROR_SYSCALL ||
@@ -264,22 +294,25 @@ do_err:
 			lws_metric_event(wsi->a.vhost->mt_traffic_rx,
 					 METRES_NOGO, 0);
 #endif
-			return LWS_SSL_CAPABLE_ERROR;
+		__lws_ssl_remove_wsi_from_buffered_list(wsi);
+
+		return LWS_SSL_CAPABLE_ERROR;
 		}
 
 		/* retryable? */
 
 		if (SSL_want_read(wsi->tls.ssl)) {
 			lwsl_debug("%s: WANT_READ\n", __func__);
-			lwsl_debug("%s: LWS_SSL_CAPABLE_MORE_SERVICE\n", lws_wsi_tag(wsi));
-			return LWS_SSL_CAPABLE_MORE_SERVICE;
+			lwsl_debug("%s: LWS_SSL_CAPABLE_MORE_SERVICE_READ\n", lws_wsi_tag(wsi));
+			return LWS_SSL_CAPABLE_MORE_SERVICE_READ;
 		}
 		if (SSL_want_write(wsi->tls.ssl)) {
 			lwsl_info("%s: WANT_WRITE\n", __func__);
-			lwsl_debug("%s: LWS_SSL_CAPABLE_MORE_SERVICE\n", lws_wsi_tag(wsi));
+			lwsl_debug("%s: LWS_SSL_CAPABLE_MORE_SERVICE_WRITE\n", lws_wsi_tag(wsi));
 			wsi->tls_read_wanted_write = 1;
 			lws_callback_on_writable(wsi);
-			return LWS_SSL_CAPABLE_MORE_SERVICE;
+			__lws_change_pollfd(wsi, LWS_POLLIN, 0);
+			return LWS_SSL_CAPABLE_MORE_SERVICE_WRITE;
 		}
 
 		/* keep on trucking it seems */
@@ -355,7 +388,18 @@ lws_ssl_capable_write(struct lws *wsi, unsigned char *buf, size_t len)
 
 	errno = 0;
 	ERR_clear_error();
+#if defined(LWS_WITH_LATENCY)
+	{
+		lws_usec_t _lws_start = lws_now_usecs();
+		n = SSL_write(wsi->tls.ssl, buf, (int)(ssize_t)len);
+		unsigned int ms = (unsigned int)((lws_now_usecs() - _lws_start) / 1000);
+		if (ms > 2) {
+			lws_latency_note(&wsi->a.context->pt[(int)wsi->tsi], _lws_start, 2000, "SSL_write:%dms", ms);
+		}
+	}
+#else
 	n = SSL_write(wsi->tls.ssl, buf, (int)(ssize_t)len);
+#endif
 	if (n > 0) {
 #if defined(LWS_WITH_SYS_METRICS)
 		if (wsi->a.vhost)
@@ -370,7 +414,7 @@ lws_ssl_capable_write(struct lws *wsi, unsigned char *buf, size_t len)
 		if (m == SSL_ERROR_WANT_READ || SSL_want_read(wsi->tls.ssl)) {
 			lwsl_notice("%s: want read\n", __func__);
 
-			return LWS_SSL_CAPABLE_MORE_SERVICE;
+			return LWS_SSL_CAPABLE_MORE_SERVICE_READ;
 		}
 
 		if (m == SSL_ERROR_WANT_WRITE || SSL_want_write(wsi->tls.ssl)) {
@@ -378,11 +422,11 @@ lws_ssl_capable_write(struct lws *wsi, unsigned char *buf, size_t len)
 
 			lwsl_debug("%s: want write\n", __func__);
 
-			return LWS_SSL_CAPABLE_MORE_SERVICE;
+			return LWS_SSL_CAPABLE_MORE_SERVICE_WRITE;
 		}
 	}
 
-	lwsl_debug("%s failed: %s\n",__func__, ERR_error_string((unsigned int)m, NULL));
+	lwsl_debug("%s failed: %s\n",__func__, ERR_error_string(LWS_TLS_ERR_CAST(m), NULL));
 	lws_tls_err_describe_clear();
 
 	wsi->socket_is_permanently_unusable = 1;
@@ -465,7 +509,8 @@ lws_ssl_close(struct lws *wsi)
 	n = SSL_get_fd(wsi->tls.ssl);
 	if (!wsi->socket_is_permanently_unusable)
 		SSL_shutdown(wsi->tls.ssl);
-	compatible_close(n);
+	if (n != (lws_sockfd_type)LWS_SOCK_INVALID && n != (lws_sockfd_type)-1)
+		compatible_close(n);
 	SSL_free(wsi->tls.ssl);
 	wsi->tls.ssl = NULL;
 
@@ -474,6 +519,11 @@ lws_ssl_close(struct lws *wsi)
 	// lwsl_notice("%s: ssl restr %d, simul %d\n", __func__,
 	//		wsi->a.context->simultaneous_ssl_restriction,
 	//		wsi->a.context->simultaneous_ssl);
+
+	if (wsi->tls.ctx_ref) {
+		lws_tls_ctx_ref_unref(wsi->tls.ctx_ref);
+		wsi->tls.ctx_ref = NULL;
+	}
 
 	return 1; /* handled */
 }
@@ -504,7 +554,8 @@ lws_ssl_context_destroy(struct lws_context *context)
 #else
 #if OPENSSL_VERSION_NUMBER >= 0x1010005f && \
     !defined(LIBRESSL_VERSION_NUMBER) && \
-    !defined(OPENSSL_IS_BORINGSSL)
+    !defined(OPENSSL_IS_BORINGSSL) && \
+	!defined(OPENSSL_IS_AWSLC)
 	ERR_remove_thread_state();
 #else
 	ERR_remove_thread_state(NULL);
@@ -549,7 +600,7 @@ __lws_tls_shutdown(struct lws *wsi)
 
 	case 0: /* needs a retry */
 		__lws_change_pollfd(wsi, 0, LWS_POLLIN);
-		return LWS_SSL_CAPABLE_MORE_SERVICE;
+		return LWS_SSL_CAPABLE_MORE_SERVICE_READ;
 
 	default: /* fatal error, or WANT */
 		n = SSL_get_error(wsi->tls.ssl, n);
@@ -564,6 +615,9 @@ __lws_tls_shutdown(struct lws *wsi)
 				__lws_change_pollfd(wsi, 0, LWS_POLLOUT);
 				return LWS_SSL_CAPABLE_MORE_SERVICE_WRITE;
 			}
+			lwsl_debug("(wants read)\n");
+			__lws_change_pollfd(wsi, 0, LWS_POLLIN);
+			return LWS_SSL_CAPABLE_MORE_SERVICE_READ;
 		}
 		return LWS_SSL_CAPABLE_ERROR;
 	}
@@ -576,6 +630,22 @@ tops_fake_POLLIN_for_buffered_openssl(struct lws_context_per_thread *pt)
 	return lws_tls_fake_POLLIN_for_buffered(pt);
 }
 
+static void
+tops_process_cleanup_openssl(void)
+{
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	OPENSSL_cleanup();
+#endif
+}
+
 const struct lws_tls_ops tls_ops_openssl = {
-	/* fake_POLLIN_for_buffered */	tops_fake_POLLIN_for_buffered_openssl,
+	.fake_POLLIN_for_buffered = tops_fake_POLLIN_for_buffered_openssl,
+	.process_cleanup = tops_process_cleanup_openssl,
 };
+
+void
+lws_tls_vhost_backend_free_ctx(lws_tls_ctx *ctx)
+{
+	if (ctx)
+		SSL_CTX_free(ctx);
+}

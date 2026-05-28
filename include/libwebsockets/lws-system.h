@@ -42,7 +42,7 @@ typedef enum {
 	LWS_SYSBLOB_TYPE_MQTT_USERNAME,
 	LWS_SYSBLOB_TYPE_MQTT_PASSWORD,
 
-#if defined(LWS_WITH_SECURE_STREAMS_AUTH_SIGV4)
+#if defined(LWS_WITH_SECURE_STREAMS_AUTH_SIGV4) || defined(LWS_WITH_JOSE)
 	/* extend 4 more auth blobs, each has 2 slots */
 	LWS_SYSBLOB_TYPE_EXT_AUTH1,
 	LWS_SYSBLOB_TYPE_EXT_AUTH2 = LWS_SYSBLOB_TYPE_EXT_AUTH1 + 2,
@@ -106,8 +106,12 @@ typedef enum { /* keep system_state_names[] in sync in context.c */
 	LWS_SYSTATE_UNKNOWN,
 
 	LWS_SYSTATE_CONTEXT_CREATED,	 /* context was just created */
+	LWS_SYSTATE_PRE_PRIV_DROP,	 /* just before we drop privs */
 	LWS_SYSTATE_INITIALIZED,	 /* protocols initialized.  Lws itself
 					  * can operate normally */
+	LWS_SYSTATE_COLLECTING_STDIN,	 /* we are waiting for stdin RX and / or
+					  * closure.  This is skipped if
+					  * system_ops.stdin_rx is NULL */
 	LWS_SYSTATE_IFACE_COLDPLUG,	 /* existing net ifaces iterated */
 	LWS_SYSTATE_DHCP,		 /* at least one net iface configured */
 	LWS_SYSTATE_CPD_PRE_TIME,	 /* Captive portal detect without valid
@@ -152,6 +156,24 @@ typedef enum { /* keep system_state_names[] in sync in context.c */
 
 /* Captive Portal Detect -related */
 
+typedef struct lws_system_seed {
+	lws_dll2_t list;
+	char hostname[128];
+} lws_system_seed_t;
+
+typedef struct lws_system_policy {
+	char dns_base_dir[128];
+	lws_dll2_owner_t seeds;
+} lws_system_policy_t;
+
+LWS_EXTERN LWS_VISIBLE int
+lws_system_parse_policy(struct lws_context *cx, const char *filepath,
+			lws_system_policy_t **_policy);
+
+LWS_EXTERN LWS_VISIBLE void
+lws_system_policy_free(lws_system_policy_t *policy);
+
+
 typedef enum {
 	LWS_CPD_UNKNOWN = 0,	/* test didn't happen ince last DHCP acq yet */
 	LWS_CPD_INTERNET_OK,	/* no captive portal: our CPD test passed OK,
@@ -159,6 +181,13 @@ typedef enum {
 	LWS_CPD_CAPTIVE_PORTAL,	/* we inferred we're behind a captive portal */
 	LWS_CPD_NO_INTERNET,	/* we couldn't touch anything */
 } lws_cpd_result_t;
+
+#if defined(LWS_WITH_NETWORK)
+typedef enum {
+	LWS_EXTIP_SRC_DHT,
+	LWS_EXTIP_SRC_EXTIP
+} lws_extip_src_t;
+#endif
 
 typedef void (*lws_attach_cb_t)(struct lws_context *context, int tsi, void *opaque);
 struct lws_attach_item;
@@ -210,6 +239,16 @@ typedef struct lws_system_ops {
 	 * returning.  The DER should be destroyed if in heap before returning.
 	 */
 
+	int (*stdin_rx)(struct lws_context *cx, const char *buf, size_t len);
+	/**< anything from stdin turns up here, eg, echo -n 123 | ./myapp will
+	 * cause this to be called with buf = "123" and len=3.  If stdin closes
+	 * before the event loop terminates, we will be called with buf = NULL
+	 * and len = 0 and nothing further, since stdin will be closed.  This is
+	 * very handy for passing secrets into your app that will not be visible
+	 * to others via the commandline and with solid behaviours whenever the
+	 * stdin source closes.
+	 */
+
 #if defined(LWS_WITH_OTA)
 	lws_ota_ops_t		ota_ops;
 	/**< Platform OTA interface to lws_ota, see lws-ota.h */
@@ -218,7 +257,51 @@ typedef struct lws_system_ops {
 	uint32_t		wake_latency_us;
 	/**< time taken for this device to wake from suspend, in us
 	 */
+
+#if defined(LWS_WITH_SYS_ASYNC_DNS)
+	uint8_t			async_dns_dnssec_mode;
+	/**< 0: OFF, 1: REQUIRE, 2: TOLERATE */
+
+	const char		*async_dns_dnssec_trust_anchor;
+	/**< base64 DS record string serving as the root trust anchor */
+#endif
+
+#if defined(LWS_WITH_NETWORK)
+	/* (Removed report_external_ip_cb in favour of SMD integration) */
+#endif
 } lws_system_ops_t;
+
+#if defined(LWS_WITH_NETWORK)
+/**
+ * lws_extip_report() - update external IP tracking state from callback
+ *
+ * \param cx: lws_context
+ * \param src: source of the internal or external IP event
+ * \param sa46: the address associated with the event (can be NULL or zeroed if offline)
+ * \param af: the address family
+ * \param status: status indication
+ * \param peers: optional peers information (for DHT)
+ * \param num_peers: optional peer count
+ *
+ * This API is used by IP tracking plugins like `lws_extip` to formally
+ * persist the external IP understanding into the context and broadcast it via SMD.
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_extip_report(struct lws_context *cx, lws_extip_src_t src, const lws_sockaddr46 *sa46, int af, int status, const lws_sockaddr46 *peers, int num_peers);
+
+/**
+ * lws_extip_get_best() - query the context for the current best external IP
+ *
+ * \param cx: lws_context
+ * \param af: AF_INET or AF_INET6
+ * \param sa46: structure to write the best known IP into
+ *
+ * Returns 0 if sa46 contains a valid external IP, or nonzero if the external IP
+ * for the requested family is unknown or offline.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_extip_get_best(struct lws_context *cx, int af, lws_sockaddr46 *sa46);
+#endif
 
 #if defined(LWS_WITH_SYS_STATE)
 
@@ -412,6 +495,41 @@ lws_system_cpd_set(struct lws_context *context, lws_cpd_result_t result);
  */
 LWS_EXTERN LWS_VISIBLE lws_cpd_result_t
 lws_system_cpd_state_get(struct lws_context *context);
+
+enum {
+	LWS_SAS_FLAG__APPEND_COMMANDLINE	= (1 << 0)
+};
+
+/**
+ * lws_system_adopt_stdin(): add stdin to be a wsi handled by the event loop
+ *
+ * \param context: the lws_context
+ *
+ * The user code should call this after context creation.  It will add stdin
+ * to the context event loop and handle it one of two ways
+ *
+ * 1) flags has LWS_SAS_FLAG__APPEND_COMMANDLINE set: internally manage the
+ *    stdin input as additional commandline content that can be accessed
+ *    alongside the official commandline context using the
+ *    lws_cmdline_option_cx() api.  Note this a) requires you to pass your
+ *    app argc and argv to the same-named context creation info struct members,
+ *    and b) is only effective after context creation.  This is very useful if
+ *    passing secrets to your app that can't appear on the commandline.  Or,
+ *
+ *  2) flags = 0: ignore the received stdin input internally, and call back
+ *  rx data (and close) to lws_system to the .stdin_rx callback.
+ *
+ * The callback is called with a buffer and length for received RX from stdin,
+ * which may be arbitrarily fragmented.  If it's called with a NULL buffer and
+ * 0 length, it means stdin was closed.
+ *
+ * Your callback should process the provided RX passed to it, and choose to
+ * return 0 to continue to wait for stdin RX, or nonzero to close stdin and
+ * continue the lws_system state startup.
+ */
+LWS_EXTERN LWS_VISIBLE int
+lws_system_adopt_stdin(struct lws_context *cx, unsigned int flags);
+
 
 #endif
 

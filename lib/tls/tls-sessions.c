@@ -34,23 +34,27 @@ lws_tls_session_tag_discrete(const char *vhname, const char *host,
 	 * different client certs.
 	 */
 
-	lws_snprintf(buf, len, "%s_%s_%u", vhname, host, port);
+	lws_snprintf(buf, len, "%s_%s_%u", vhname, host, (unsigned int)port);
+	lws_filename_purify_inplace(buf);
 }
 
 int
 lws_tls_session_tag_from_wsi(struct lws *wsi, char *buf, size_t len)
 {
-	const char *host;
+	const char *host = NULL;
 
 	if (!wsi)
 		return 1;
 
-	if (!wsi->stash)
-		return 1;
-
-	host = wsi->stash->cis[CIS_HOST];
-	if (!host)
-		host = wsi->stash->cis[CIS_ADDRESS];
+#if defined(LWS_WITH_CLIENT)
+	if (wsi->stash) {
+		host = wsi->stash->cis[CIS_HOST];
+		if (!host)
+			host = wsi->stash->cis[CIS_ADDRESS];
+	} else {
+		host = wsi->cli_hostname_copy;
+	}
+#endif
 
 	if (!host)
 		return 1;

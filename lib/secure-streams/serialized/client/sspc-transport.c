@@ -191,6 +191,7 @@ lws_sspc_txp_event_closed(lws_transport_priv_t priv)
 		r = h->ssi.state(ss_to_userobj(h), NULL,
 					 LWSSSCS_DISCONNECTED, 0);
 	}
+	h->creating_cb_done = 0;
 	if (r != LWSSSSRET_DESTROY_ME)
 		/*
 		 * schedule a reconnect in 1s
@@ -336,9 +337,10 @@ lws_sspc_txp_tx(lws_sspc_handle_t *h, size_t metadata_limit)
 			goto req_write_and_issue;
 		}
 
-		if (h->conn_req_state >= LWSSSPC_ONW_ONGOING) {
-			lwsl_sspc_info(h, "conn_req_state %d",
-					h->conn_req_state);
+		if (h->conn_req_state != LWSSSPC_ONW_REQ) {
+			if (h->conn_req_state == LWSSSPC_ONW_ONGOING)
+				lwsl_sspc_info(h, "conn_req_state %d",
+						h->conn_req_state);
 			break;
 		}
 

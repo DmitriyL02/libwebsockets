@@ -1,7 +1,7 @@
 #
 # libwebsockets - small server side websockets and web server implementation
 #
-# Copyright (C) 2010 - 2020 Andy Green <andy@warmcat.com>
+# Copyright (C) 2010 - 2025 Andy Green <andy@warmcat.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to
@@ -31,9 +31,14 @@
 
 include_directories(./async-dns)
 
+if (NOT LWS_PLAT_FREERTOS AND NOT LWS_PLAT_BAREMETAL AND NOT LWS_PLAT_ANDROID AND LWS_WITH_NETWORK)
+	list(APPEND SOURCES system/stdin.c)
+endif()
+
 if (NOT LWS_ONLY_SSPC)
 	list(APPEND SOURCES
-		system/system.c)
+		system/system.c
+		system/policy.c)
 endif()
 	
 if (LWS_WITH_NETWORK)
@@ -42,11 +47,27 @@ if (LWS_WITH_NETWORK)
 		list(APPEND SOURCES
 			system/async-dns/async-dns.c
 			system/async-dns/async-dns-parse.c)
+
+		if (LWS_WITH_SYS_ASYNC_DNS_DNSSEC)
+			list(APPEND SOURCES
+				system/async-dns/dnssec.c)
+		endif()
+	endif()
+
+	if (LWS_WITH_AUTHORITATIVE_DNS)
+		list(APPEND SOURCES
+			system/auth-dns/auth-dns.c
+			system/auth-dns/sign.c)
 	endif()
 
 	if (LWS_WITH_SYS_NTPCLIENT)
 		list(APPEND SOURCES
 			system/ntpclient/ntpclient.c)
+	endif()
+	
+	if (LWS_WITH_SYS_WHOIS)
+		list(APPEND SOURCES
+			system/whois/whois.c)
 	endif()
 
 	if (LWS_WITH_SYS_DHCP_CLIENT)

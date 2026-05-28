@@ -67,15 +67,68 @@ static const char * const default_ss_policy =
 	"o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU"
 	"5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy"
 	"rqXRfboQnoZsG4q5WTP468SQvvG5"
-		"\"}"
-	  "],"
+		"\"},"
+				"{\"isrg_root_x1\": \""
+	"MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw"
+	"TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh"
+	"cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4"
+	"WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu"
+	"ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY"
+	"MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc"
+	"h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+"
+	"0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U"
+	"A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW"
+	"T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH"
+	"B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC"
+	"B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv"
+	"KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn"
+	"OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn"
+	"jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw"
+	"qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI"
+	"rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV"
+	"HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq"
+	"hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL"
+	"ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ"
+	"3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK"
+	"NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5"
+	"ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur"
+	"TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC"
+	"jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc"
+	"oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq"
+	"4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA"
+	"mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57de"
+	"myPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc="
+	  "\"},\n"
+		"{\"isrg_root_x2\": \""
+	"MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw"
+	"CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg"
+	"R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00"
+	"MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT"
+	"ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw"
+	"EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW"
+	"+1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9"
+	"ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T"
+	"AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI"
+	"zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW"
+	"tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1"
+	"/q4AaOeMSQ+2b1tbFfLn"
+	  "\"}"
+      		"],"
 	  "\"trust_stores\": [" /* named cert chains */
 		"{"
 			"\"name\": \"amz\","
 			"\"stack\": ["
 				"\"amz_root_ca1\""
 			"]"
+		"},"
+		"{"
+			"\"name\": \"le_via_isrg\","
+			"\"stack\": ["
+				"\"isrg_root_x1\","
+				"\"isrg_root_x2\""
+			"]"
 		"}"
+
 	  "],"
 	  "\"s\": ["
 	  	/*
@@ -84,37 +137,37 @@ static const char * const default_ss_policy =
 		 * policy is treated as the whole, hardcoded, policy.
 		 */
 		"{\"httpbin_get\": {"
-			"\"endpoint\":"		"\"httpbin.org\","
+			"\"endpoint\":"		"\"libwebsockets.org\","
 			"\"port\":"		"443,"
 			"\"protocol\":"		"\"h1\","
 			"\"http_method\":"	"\"GET\","
-			"\"http_url\":"		"\"/get\","
+			"\"http_url\":"		"\"/httpbin/get\","
 			"\"tls\":"		"true,"
 			"\"opportunistic\":"	"true,"
 			"\"retry\":"		"\"default\","
-			"\"tls_trust_store\":"	"\"amz\""
+			"\"tls_trust_store\":"	"\"le_via_isrg\""
 		"}},"
 		"{\"httpbin_get404\": {"
-			"\"endpoint\":"		"\"httpbin.org\","
+			"\"endpoint\":"		"\"libwebsockets.org\","
 			"\"port\":"		"443,"
 			"\"protocol\":"		"\"h1\","
 			"\"http_method\":"	"\"GET\","
-			"\"http_url\":"		"\"/status/404\","
+			"\"http_url\":"		"\"/httpbin/status/403\","
 			"\"tls\":"		"true,"
 			"\"opportunistic\":"	"true,"
 			"\"retry\":"		"\"default\","
-			"\"tls_trust_store\":"	"\"amz\""
+			"\"tls_trust_store\":"	"\"le_via_isrg\""
 		"}},"
 		"{\"httpbin_post\": {"
-			"\"endpoint\":"		"\"httpbin.org\","
+			"\"endpoint\":"		"\"libwebsockets.org\","
 			"\"port\":"		"443,"
 			"\"protocol\":"		"\"h1\","
 			"\"http_method\":"	"\"POST\","
-			"\"http_url\":"		"\"/post\","
+			"\"http_url\":"		"\"/httpbin/post\","
 			"\"tls\":"		"true,"
 			"\"opportunistic\":"	"true,"
 			"\"retry\":"		"\"default\","
-			"\"tls_trust_store\":"	"\"amz\""
+			"\"tls_trust_store\":"	"\"le_via_isrg\""
 			"}}"
                 "}"
 	"]}"
@@ -137,6 +190,7 @@ typedef struct myss {
 	size_t				sent;
 	char				seen_eom;
 	char				ended_well;
+	char				expect_nack;
 } myss_t;
 
 /* secure streams payload interface */
@@ -197,14 +251,15 @@ myss_state(void *userobj, void *sh, lws_ss_constate_t state,
 	myss_t *m = (myss_t *)userobj;
 	lws_ss_state_return_t r;
 
-	lwsl_notice("%s: %s, ord 0x%x\n", __func__, lws_ss_state_name((int)state),
-		  (unsigned int)ack);
+	lwsl_ss_notice(m->ss, "%s: %s, ord 0x%x, esp_nack: %d\n", __func__, lws_ss_state_name(state),
+		  (unsigned int)ack, m->expect_nack);
 
 	switch (state) {
 	case LWSSSCS_CREATING:
 		r = lws_ss_client_connect(m->ss);
 		if (r)
 			return r;
+		m->expect_nack = next_test->expect_nack;
 		if (next_test->send)
 			return lws_ss_request_tx_len(m->ss, (unsigned long)next_test->send);
 		break;
@@ -213,21 +268,21 @@ myss_state(void *userobj, void *sh, lws_ss_constate_t state,
 		interrupted = 1;
 		break;
 	case LWSSSCS_QOS_NACK_REMOTE:
-		if (next_test->expect_nack)
+		if (m->expect_nack)
 			goto happy;
-		lwsl_notice("%s: remote NACK\n", __func__);
+		lwsl_notice("%s: remote NACK, not expecting it\n", __func__);
 		interrupted = 1;
 		break;
 	case LWSSSCS_QOS_ACK_REMOTE:
 		/*
 		 * To be satisfied, we want to see the ACK_REMOTE indicating
 		 * that the transaction went through; that we had the payload
-		 * EOM; and that we saw at least 200 + posted bytes response
+		 * EOM; and that we saw at least 100 + posted bytes response
 		 */
 
-		if (!m->seen_eom || m->payload < 200 + next_test->send) {
-			lwsl_warn("%s: ACK_REMOTE but eom %d, payload %d\n",
-				  __func__, m->seen_eom, (int)m->payload);
+		if (!m->seen_eom || m->payload < 100) {
+			lwsl_warn("%s: ACK_REMOTE but eom %d, payload %d (req >= %d)\n",
+				  __func__, m->seen_eom, (int)m->payload, (int)(100 + m->sent));
 			interrupted = 1;
 			return -1;
 		}
@@ -240,15 +295,15 @@ happy:
 			lwsl_notice("%s: completed all tests\n", __func__);
 			bad = 0;
 			interrupted = 1;
-			break;
+			return LWSSSSRET_DESTROY_ME;
 		}
 		if (lws_ss_create(context, 0, next_test->ssi,
 				  NULL, NULL, NULL, NULL)) {
 			lwsl_err("%s: failed to create secure stream\n",
 				 __func__);
-			return -1;
+			return LWSSSSRET_DESTROY_ME;
 		}
-		break;
+		return LWSSSSRET_DESTROY_ME;
 
 	case LWSSSCS_DISCONNECTED:
 		if (!m->ended_well) {

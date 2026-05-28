@@ -228,7 +228,7 @@ lws_apply_metadata(lws_ss_handle_t *h, struct lws *wsi, uint8_t *buf,
 					polmd->value__may_own_heap,
 					h->metadata[m].value__may_own_heap,
 					(int)h->metadata[m].length, pp, end))
-			return -1;
+			        return -1;
 
 			/*
 			 * Check for the case he's setting a non-zero
@@ -237,8 +237,7 @@ lws_apply_metadata(lws_ss_handle_t *h, struct lws *wsi, uint8_t *buf,
 			 * state if so...
 			 */
 
-			if (!strncmp(polmd->value__may_own_heap,
-				     "content-length", 14) &&
+			if (!strncmp(polmd->value__may_own_heap, "content-length", 14) &&
 			    atoi(h->metadata[m].value__may_own_heap))
 				lws_client_http_body_pending(wsi, 1);
 		}
@@ -248,12 +247,15 @@ lws_apply_metadata(lws_ss_handle_t *h, struct lws *wsi, uint8_t *buf,
 	}
 
 	/*
-	 * Content-length on POST / PUT if we have the length information
+	 * Content-length on POST / PUT / PATCH if we have the length information
 	 */
 
 	if (h->policy->u.http.method && (
-		(!strcmp(h->policy->u.http.method, "POST") ||
-	         !strcmp(h->policy->u.http.method, "PUT"))) &&
+#if defined(LWS_WITH_HTTP_UNCOMMON_HEADERS) || defined(LWS_HTTP_HEADERS_ALL)
+		 !strcmp(h->policy->u.http.method, "PATCH") ||
+		 !strcmp(h->policy->u.http.method, "PUT") ||
+#endif
+		(!strcmp(h->policy->u.http.method, "POST"))) &&
 	    wsi->http.writeable_len) {
 		if (!(h->policy->flags &
 			LWSSSPOLF_HTTP_NO_CONTENT_LENGTH)) {
@@ -367,10 +369,21 @@ lws_extract_metadata(lws_ss_handle_t *h, struct lws *wsi)
 						    polmd->value__may_own_heap,
 						    polmd->value_length);
 				if (n > 0) {
+					int r;
 
 					p = lws_malloc((unsigned int)n + 1, __func__);
 					if (!p)
 						return 1;
+
+					/*
+					 * copy the named custom header value
+					 * into the malloc'd buffer
+					 */
+
+					r = lws_hdr_custom_copy(wsi, p, n + 1,
+						     (const char *)
+						     polmd->value__may_own_heap,
+						     polmd->value_length);
 
 					/* if needed, free any previous value */
 
@@ -380,15 +393,7 @@ lws_extract_metadata(lws_ss_handle_t *h, struct lws *wsi)
 						polmd->value_on_lws_heap = 0;
 					}
 
-					/*
-					 * copy the named custom header value
-					 * into the malloc'd buffer
-					 */
-
-					if (lws_hdr_custom_copy(wsi, p, n + 1,
-						     (const char *)
-						     polmd->value__may_own_heap,
-						     polmd->value_length) < 0) {
+					if (r < 0) {
 						lws_free(p);
 
 						return 1;
@@ -446,7 +451,7 @@ secstream_h1(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 
 	case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
 		if (!h) {
-			lwsl_err("%s: CCE with no ss handle %s\n", __func__, lws_wsi_tag(wsi));
+			lwsl_notice("%s: CCE with no ss handle %s\n", __func__, lws_wsi_tag(wsi));
 			break;
 		}
 
@@ -506,7 +511,8 @@ secstream_h1(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 		if (!h)
 			break;
 
-		lws_sul_cancel(&h->sul_timeout);
+		h->txn_n_acked = 0;
+		// lws_sul_cancel(&h->sul_timeout);
 
 		lws_ss_assert_extant(wsi->a.context, wsi->tsi, h);
 
@@ -542,9 +548,14 @@ secstream_h1(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 			r = lws_ss_backoff(h);
 			if (r != LWSSSSRET_OK)
 				return _lws_ss_handle_state_ret_CAN_DESTROY_HANDLE(r, wsi, &h);
+			if (h->seqstate == SSSEQ_IDLE)
+				lws_sul_cancel(&h->sul_timeout);
+
 			break;
-		} else
+		} else {
 			h->seqstate = SSSEQ_IDLE;
+			lws_sul_cancel(&h->sul_timeout);
+		}
 
 		if (h->ss_dangling_connected) {
 			/* already disconnected, no action for DISCONNECT_ME */
@@ -637,12 +648,10 @@ secstream_h1(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 
 		if (h->u.http.good_respcode)
 			lwsl_info("%s: Connected streamtype %s, %d\n", __func__,
-				  h->policy->streamtype, status);
+				h->policy->streamtype, status);
 		else
-			if (h->u.http.good_respcode)
-				lwsl_warn("%s: Connected streamtype %s, BAD %d\n",
-					  __func__, h->policy->streamtype,
-					  status);
+			lwsl_info("%s: Connected streamtype %s, BAD %d\n",
+				__func__, h->policy->streamtype, status);
 
 		h->hanging_som = 0;
 
@@ -662,7 +671,10 @@ secstream_h1(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 				if (r != LWSSSSRET_OK)
 					return _lws_ss_handle_state_ret_CAN_DESTROY_HANDLE(r, wsi, &h);
 			}
-			if (h->prev_ss_state != LWSSSCS_CONNECTED) {
+                       if (h->prev_ss_state != LWSSSCS_CONNECTED &&
+                           h->prev_ss_state != LWSSSCS_QOS_ACK_REMOTE &&
+                           h->prev_ss_state != LWSSSCS_QOS_NACK_REMOTE) {
+                               // lwsl_ss_notice(h, "HTTP_ESTABLISHED");
 				r = lws_ss_event_helper(h, LWSSSCS_CONNECTED);
 				if (r != LWSSSSRET_OK)
 					return _lws_ss_handle_state_ret_CAN_DESTROY_HANDLE(r, wsi, &h);
@@ -839,7 +851,10 @@ malformed:
 		if ((h->policy->protocol == LWSSSP_H1 ||
 		     h->policy->protocol == LWSSSP_H2) &&
 		     h->being_serialized && (
+#if defined(LWS_WITH_HTTP_UNCOMMON_HEADERS) || defined(LWS_HTTP_HEADERS_ALL)
 				!strcmp(h->policy->u.http.method, "PUT") ||
+				!strcmp(h->policy->u.http.method, "PATCH") ||
+#endif
 				!strcmp(h->policy->u.http.method, "POST"))) {
 
 			wsi->client_suppress_CONNECTION_ERROR = 1;
@@ -889,11 +904,12 @@ malformed:
 			char *px = (char *)buf + LWS_PRE; /* guarantees LWS_PRE */
 			int lenx = sizeof(buf) - LWS_PRE;
 
-			m = lws_http_client_read(wsi, &px, &lenx);
-			if (m < 0)
-				return m;
+			if (lws_http_client_read(wsi, &px, &lenx) < 0)
+				return -1;
 		}
-		lws_set_timeout(wsi, 99, 30);
+
+		if (!h->txn_ok)
+			lws_set_timeout(wsi, PENDING_TIMEOUT_HTTP_CONTENT, 30);
 
 		return 0; /* don't passthru */
 
@@ -920,12 +936,20 @@ malformed:
 				       "SS_ACK_REMOTE" : "SS_NACK_REMOTE");
 #endif
 
-		r = lws_ss_event_helper(h, h->u.http.good_respcode ?
+		if (!h->ss_dangling_connected) {
+			r = lws_ss_event_helper(h, LWSSSCS_CONNECTED);
+			if (r != LWSSSSRET_OK)
+				return _lws_ss_handle_state_ret_CAN_DESTROY_HANDLE(r, wsi, &h);
+		}
+
+		if (!h->txn_n_acked) {
+			h->txn_n_acked = 1;
+			r = lws_ss_event_helper(h, h->u.http.good_respcode ?
 						LWSSSCS_QOS_ACK_REMOTE :
 						LWSSSCS_QOS_NACK_REMOTE);
-		if (r != LWSSSSRET_OK)
-			return _lws_ss_handle_state_ret_CAN_DESTROY_HANDLE(r, wsi, &h);
-
+			if (r != LWSSSSRET_OK)
+				return _lws_ss_handle_state_ret_CAN_DESTROY_HANDLE(r, wsi, &h);
+		}
 		lws_cancel_service(lws_get_context(wsi)); /* abort poll wait */
 		break;
 
@@ -949,7 +973,10 @@ malformed:
 					(unsigned int)(h->txn_resp_set ?
 						(h->txn_resp ? h->txn_resp : 200) :
 						HTTP_STATUS_NOT_FOUND),
-					NULL, h->wsi->http.writeable_len,
+					NULL,
+					h->policy->flags & LWSSSPOLF_HTTP_NO_CONTENT_LENGTH ?
+						LWS_ILLEGAL_HTTP_CONTENT_LEN :
+						h->wsi->http.writeable_len,
 					&p, end))
 				return 1;
 
@@ -1066,6 +1093,9 @@ malformed:
 		if (!h)
 			return -1;
 
+		if (h->wsi && h->wsi->mount_hit)
+			break;
+
 		lwsl_info("%s: LWS_CALLBACK_HTTP\n", __func__);
 		{
 
@@ -1096,6 +1126,11 @@ malformed:
 						return -1;
 					if (lws_ss_alloc_set_metadata(h, "method", "GET", 3))
 						return -1;
+					m = lws_hdr_fragment_length(wsi, WSI_TOKEN_HTTP_AUTHORIZATION, 0);
+					if (m && lws_ss_alloc_set_metadata(h, "auth",
+							lws_hdr_simple_ptr(wsi,
+								WSI_TOKEN_HTTP_AUTHORIZATION), (unsigned int)m))
+						return -1;
 				} else {
 					m = lws_hdr_total_length(wsi, WSI_TOKEN_POST_URI);
 					if (m) {
@@ -1105,6 +1140,28 @@ malformed:
 							return -1;
 						if (lws_ss_alloc_set_metadata(h, "method", "POST", 4))
 							return -1;
+						m = lws_hdr_fragment_length(wsi, WSI_TOKEN_HTTP_AUTHORIZATION, 0);
+						if (m && lws_ss_alloc_set_metadata(h, "auth",
+							lws_hdr_simple_ptr(wsi,
+								WSI_TOKEN_HTTP_AUTHORIZATION), (unsigned int)m))
+							return -1;
+					} else {
+#if defined(LWS_WITH_HTTP_UNCOMMON_HEADERS) || defined(LWS_HTTP_HEADERS_ALL)
+						m = lws_hdr_total_length(wsi, WSI_TOKEN_PATCH_URI);
+						if (m) {
+							if (lws_ss_alloc_set_metadata(h, "path",
+									lws_hdr_simple_ptr(wsi,
+										WSI_TOKEN_PATCH_URI), (unsigned int)m))
+								return -1;
+							if (lws_ss_alloc_set_metadata(h, "method", "PATCH", 5))
+								return -1;
+							m = lws_hdr_fragment_length(wsi, WSI_TOKEN_HTTP_AUTHORIZATION, 0);
+							if (m && lws_ss_alloc_set_metadata(h, "auth",
+								lws_hdr_simple_ptr(wsi,
+									WSI_TOKEN_HTTP_AUTHORIZATION), (unsigned int)m))
+								return -1;
+						}
+#endif
 					}
 				}
 			}
@@ -1122,6 +1179,32 @@ malformed:
 				r = lws_ss_event_helper(h, LWSSSCS_CONNECTED);
 				if (r)
 					return _lws_ss_handle_state_ret_CAN_DESTROY_HANDLE(r, wsi, &h);
+			}
+		}
+
+		/*
+		 * Check if any of the metadata defined in the policy correspond
+		 * to urlargs that we can see... if so, adopt them as the
+		 * metadata values
+		 */
+		{
+			lws_ss_metadata_t *polmd;
+
+			if (h->policy) {
+				polmd = h->policy->metadata;
+				while (polmd) {
+					char buf[1024];
+					int n = lws_get_urlarg_by_name_safe(wsi,
+							polmd->name, buf,
+							sizeof(buf));
+					if (n >= 0)
+						if (lws_ss_alloc_set_metadata(h,
+							polmd->name, buf,
+							(unsigned int)n))
+							return -1;
+
+					polmd = polmd->next;
+				}
 			}
 		}
 
@@ -1201,6 +1284,11 @@ secstream_connect_munge_h1(lws_ss_handle_t *h, char *buf, size_t len,
 	if (lws_strexp_expand(&exp, pbasis, strlen(pbasis),
 			      &used_in, &used_out) != LSTRX_DONE)
 		return 1;
+
+	if (used_out + 1 < len - 1)
+		buf[used_out + 1] = '\0';
+
+	__lws_lc_tag_append(&h->lc, buf);
 
 	return 0;
 }

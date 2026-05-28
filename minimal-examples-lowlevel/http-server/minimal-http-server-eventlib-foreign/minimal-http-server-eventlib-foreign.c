@@ -20,6 +20,33 @@
  */
 
 #include <libwebsockets.h>
+
+enum {
+	LWS_SW_EV,
+	LWS_SW_EVENT,
+	LWS_SW_GLIB,
+	LWS_SW_SD,
+	LWS_SW_ULOOP,
+	LWS_SW_UV,
+	LWS_SW_D,
+	LWS_SW_P,
+	LWS_SW_S,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_EV]	= { "--ev",            "Enable --ev feature" },
+	[LWS_SW_EVENT]	= { "--event",         "Enable --event feature" },
+	[LWS_SW_GLIB]	= { "--glib",          "Enable --glib feature" },
+	[LWS_SW_SD]	= { "--sd",            "Enable --sd feature" },
+	[LWS_SW_ULOOP]	= { "--uloop",         "Enable --uloop feature" },
+	[LWS_SW_UV]	= { "--uv",            "Enable --uv feature" },
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_P]	= { "-p",              "Port number to listen or connect on" },
+	[LWS_SW_S]	= { "-s",              "Use TLS / https" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 #include <string.h>
 #include <signal.h>
 
@@ -39,24 +66,11 @@ enum {
 static int sequence = TEST_STATE_CREATE_LWS_CONTEXT;
 
 static const struct lws_http_mount mount = {
-	/* .mount_next */		NULL,		/* linked-list "next" */
-	/* .mountpoint */		"/",		/* mountpoint URL */
-	/* .origin */			"./mount-origin", /* serve from dir */
-	/* .def */			"index.html",	/* default filename */
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .cache_no */                 0,
-	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
-	/* .mountpoint_len */		1,		/* char count */
-	/* .basic_auth_login_file */	NULL,
+	.mountpoint		= "/",			/* mountpoint URL */
+	.origin			= "./mount-origin",	/* serve from dir */
+	.def			= "index.html",		/* default filename */
+	.origin_protocol	= LWSMPRO_FILE,		/* files in a dir */
+	.mountpoint_len		= 1,			/* char count */
 };
 
 void
@@ -230,8 +244,15 @@ int main(int argc, const char **argv)
 			/* | LLL_INFO */ /* | LLL_PARSER */ /* | LLL_HEADER */
 			/* | LLL_EXT */ /* | LLL_CLIENT */ /* | LLL_LATENCY */
 			/* | LLL_DEBUG */;
+	(void)switches;
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if ((argc == 1) || lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
+
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
@@ -246,7 +267,7 @@ int main(int argc, const char **argv)
 
 	memset(&info, 0, sizeof info); /* otherwise uninitialized garbage */
 	info.port = 7681;
-	if ((p = lws_cmdline_option(argc, argv, "-p")))
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_P].sw)))
 		info.port = atoi(p);
 	info.mounts = &mount;
 	info.error_document_404 = "/404.html";
@@ -255,7 +276,7 @@ int main(int argc, const char **argv)
 	info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT |
 		LWS_SERVER_OPTION_HTTP_HEADERS_SECURITY_BEST_PRACTICES_ENFORCE;
 
-	if (lws_cmdline_option(argc, argv, "-s")) {
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_S].sw)) {
 		info.ssl_cert_filepath = "localhost-100y.cert";
 		info.ssl_private_key_filepath = "localhost-100y.key";
 	}
@@ -266,42 +287,42 @@ int main(int argc, const char **argv)
 	 */
 
 #if defined(LWS_WITH_LIBUV)
-	if (lws_cmdline_option(argc, argv, "--uv")) {
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_UV].sw)) {
 		info.options |= LWS_SERVER_OPTION_LIBUV;
 		ops = &ops_libuv;
 		lwsl_notice("%s: using libuv event loop\n", __func__);
 	} else
 #endif
 #if defined(LWS_WITH_LIBEVENT)
-		if (lws_cmdline_option(argc, argv, "--event")) {
+		if (lws_cmdline_option(argc, argv, switches[LWS_SW_EVENT].sw)) {
 			info.options |= LWS_SERVER_OPTION_LIBEVENT;
 			ops = &ops_libevent;
 			lwsl_notice("%s: using libevent loop\n", __func__);
 		} else
 #endif
 #if defined(LWS_WITH_LIBEV)
-			if (lws_cmdline_option(argc, argv, "--ev")) {
+			if (lws_cmdline_option(argc, argv, switches[LWS_SW_EV].sw)) {
 				info.options |= LWS_SERVER_OPTION_LIBEV;
 				ops = &ops_libev;
 				lwsl_notice("%s: using libev loop\n", __func__);
 			} else
 #endif
 #if defined(LWS_WITH_GLIB)
-				if (lws_cmdline_option(argc, argv, "--glib")) {
+				if (lws_cmdline_option(argc, argv, switches[LWS_SW_GLIB].sw)) {
 					info.options |= LWS_SERVER_OPTION_GLIB;
 					ops = &ops_glib;
 					lwsl_notice("%s: using glib loop\n", __func__);
 				} else
 #endif
 #if defined(LWS_WITH_SDEVENT)
-					if (lws_cmdline_option(argc, argv, "--sd")) {
+					if (lws_cmdline_option(argc, argv, switches[LWS_SW_SD].sw)) {
 						info.options |= LWS_SERVER_OPTION_SDEVENT;
 						ops = &ops_sdevent;
 						lwsl_notice("%s: using sd-event loop\n", __func__);
 					} else
 #endif
 #if defined(LWS_WITH_ULOOP)
-					if (lws_cmdline_option(argc, argv, "--uloop")) {
+					if (lws_cmdline_option(argc, argv, switches[LWS_SW_ULOOP].sw)) {
 						info.options |= LWS_SERVER_OPTION_ULOOP;
 						ops = &ops_uloop;
 						lwsl_notice("%s: using uloop loop\n", __func__);

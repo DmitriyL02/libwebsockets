@@ -9,10 +9,30 @@
 
 #include <libwebsockets.h>
 
+
+enum {
+	LWS_SW_D,
+	LWS_SW_HELP,
+};
+
+static const struct lws_switches switches[] = {
+	[LWS_SW_D]	= { "-d",              "Debug logs (e.g. -d 15)" },
+	[LWS_SW_HELP]	= { "--help",		"Show this help information" },
+};
+
 int
 test_genaes(struct lws_context *context);
 int
 test_genec(struct lws_context *context);
+int
+test_genhkdf(struct lws_context *context);
+int
+test_genchacha(struct lws_context *context);
+
+#if defined(LWS_WITH_MBEDTLS) && defined(LWS_WITH_TLS)
+/* int
+test_mbedtls_cipherlist(struct lws_context *context); */
+#endif
 
 int main(int argc, const char **argv)
 {
@@ -20,8 +40,15 @@ int main(int argc, const char **argv)
 	struct lws_context *context;
 	const char *p;
 	int result = 0, logs = LLL_USER | LLL_ERR | LLL_WARN | LLL_NOTICE;
+	(void)switches;
 
-	if ((p = lws_cmdline_option(argc, argv, "-d")))
+	if (lws_cmdline_option(argc, argv, switches[LWS_SW_HELP].sw)) {
+		lws_switches_print_help(argv[0], switches, LWS_ARRAY_SIZE(switches));
+		return 0;
+	}
+
+
+	if ((p = lws_cmdline_option(argc, argv, switches[LWS_SW_D].sw)))
 		logs = atoi(p);
 
 	lws_set_log_level(logs, NULL);
@@ -41,6 +68,12 @@ int main(int argc, const char **argv)
 
 	result |= test_genaes(context);
 	result |= test_genec(context);
+	result |= test_genhkdf(context);
+	result |= test_genchacha(context);
+
+#if defined(LWS_WITH_MBEDTLS) && defined(LWS_WITH_TLS)
+	/* result |= test_mbedtls_cipherlist(context); */ /* Requires static linking to access inner OpenSSL shim symbols */
+#endif
 
 	lwsl_user("Completed: %s\n", result ? "FAIL" : "PASS");
 

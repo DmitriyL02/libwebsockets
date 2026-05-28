@@ -27,16 +27,16 @@
 #define LWS_CPYAPP(ptr, str) { strcpy(ptr, str); ptr += strlen(str); }
 
 #if !defined(LWS_WITHOUT_EXTENSIONS)
-static int
+int
 lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 {
 	struct lws_context *context = wsi->a.context;
 	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
-	char ext_name[64], *args, *end = (*p) + budget - 1;
+	char ext_name[64], ev[64], *args, *end = (*p) + budget - 1;
 	const struct lws_ext_options *opts, *po;
 	const struct lws_extension *ext;
 	struct lws_ext_option_arg oa;
-	int n, m, more = 1;
+	int n, m, more = 1, ep = 0;
 	int ext_count = 0;
 	char ignore;
 	char *c;
@@ -123,7 +123,7 @@ lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 
 			/*
 			 * oh, we do support this one he asked for... but let's
-			 * confirm he only gave it once
+			 * go on to confirm he only gave it once
 			 */
 			for (m = 0; m < wsi->ws->count_act_ext; m++)
 				if (wsi->ws->active_extensions[m] == ext) {
@@ -147,6 +147,11 @@ lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 			if (m) {
 				ext++;
 				continue;
+			}
+
+			if (wsi->ws->count_act_ext >= LWS_MAX_EXTENSIONS_ACTIVE) {
+				lwsl_info("too many extensions\n");
+				return 1;
 			}
 
 			/* apply it */
@@ -173,11 +178,9 @@ lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 			}
 
 			if (ext_count > 1)
-				*(*p)++ = ',';
-			else
-				LWS_CPYAPP(*p,
-					  "\x0d\x0aSec-WebSocket-Extensions: ");
-			*p += lws_snprintf(*p, lws_ptr_diff_size_t(end, *p), "%s", ext_name);
+				ev[ep++] = ',';
+
+			ep += lws_snprintf(ev + ep, (size_t)((int)sizeof(ev) - 1 - ep), "%s", ext_name);
 
 			/*
 			 * The client may send a bunch of different option
@@ -216,10 +219,10 @@ lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 						LWS_EXT_CB_OPTION_SET,
 						wsi->ws->act_ext_user[
 							wsi->ws->count_act_ext],
-							  &oa, lws_ptr_diff_size_t(end, *p))) {
+							  &oa, (size_t)((int)sizeof(ev) - 1 - ep))) {
 
-						*p += lws_snprintf(*p,
-								   lws_ptr_diff_size_t(end, *p),
+						ep += lws_snprintf(ev + ep,
+								   (size_t)((int)sizeof(ev) - 1 - ep),
 							      "; %s", po->name);
 						lwsl_debug("adding option %s\n",
 							   po->name);
@@ -245,6 +248,17 @@ lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 
 		n = 0;
 		args = NULL;
+	}
+
+	if (ep) {
+		int mm = lws_add_http_header_by_name(wsi,
+						     (const unsigned char *)"sec-websocket-extensions",
+						     (unsigned char *)ev, ep, (unsigned char **)p, (unsigned char *)end);
+
+		if (mm < 0) {
+			lwsl_wsi_err(wsi, "Failed to add s-w-e");
+			return 1;
+		}
 	}
 
 	return 0;
@@ -276,6 +290,7 @@ lws_process_ws_upgrade2(struct lws *wsi)
 		switch (lws_check_basic_auth(wsi, ws_prot_basic_auth, LWSAUTHM_DEFAULT
 						/* no callback based auth here */)) {
 		case LCBA_CONTINUE:
+		case LCBA_AUTH_RETRY_KEEPALIVE:
 			break;
 		case LCBA_FAILED_AUTH:
 			return lws_unauthorised_basic_auth(wsi);
@@ -356,7 +371,11 @@ lws_process_ws_upgrade2(struct lws *wsi)
 			LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION,
 			wsi->user_space,
 		      lws_hdr_simple_ptr(wsi, WSI_TOKEN_PROTOCOL), 0)) {
-		lwsl_warn("User code denied connection\n");
+#if (_LWS_ENABLED_LOGS & LLL_WARN)
+		char name[64];
+		lwsl_warn("User code denied connection: protocol=%s, peer=%s\n",
+			  wsi->a.protocol->name, lws_get_peer_simple(wsi, name, sizeof(name)));
+#endif
 		return 1;
 	}
 
@@ -383,13 +402,7 @@ lws_process_ws_upgrade2(struct lws *wsi)
 					    LWSIFR_SERVER | LWSIFR_P_ENCAP_H2,
 					    LRS_ESTABLISHED, &role_ops_ws);
 
-			/*
-			 * There should be no validity checking since we
-			 * are encapsulated in something else with its own
-			 * validity checking
-			 */
 
-			lws_sul_cancel(&wsi->sul_validity);
 		} else
 #endif
 		{
@@ -624,7 +637,7 @@ lws_process_ws_upgrade(struct lws *wsi)
 	/* we didn't find a protocol he wanted? */
 
 	if (!pcol) {
-		lwsl_notice("No supported protocol \"%s\"\n", buf);
+		lwsl_wsi_notice(wsi, "No supported protocol \"%s\"\n", buf);
 
 		return 1;
 	}
@@ -730,17 +743,20 @@ handshake_0405(struct lws_context *context, struct lws *wsi)
 		p += lws_snprintf(p, 128, "%s", prot);
 	}
 
+       LWS_CPYAPP(p, "\x0d\x0a");
+
 #if !defined(LWS_WITHOUT_EXTENSIONS)
 	/*
 	 * Figure out which extensions the client has that we want to
 	 * enable on this connection, and give him back the list.
 	 *
-	 * Give him a limited write bugdet
+	 * Give him a limited write bugdet.
+	 *
+	 * This appends a closing CRLF before returning, if h1
 	 */
-	if (lws_extension_server_handshake(wsi, &p, 192))
+	if (lws_extension_server_handshake(wsi, &p, 190))
 		goto bail;
 #endif
-	LWS_CPYAPP(p, "\x0d\x0a");
 
 	args.p = p;
 	args.max_len = lws_ptr_diff((char *)pt->serv_buf +
@@ -990,6 +1006,7 @@ int
 lws_parse_ws(struct lws *wsi, unsigned char **buf, size_t len)
 {
 	unsigned char *bufin = *buf;
+	lws_handling_result_t hr;
 	int m, bulk = 0;
 
 	lwsl_debug("%s: received %d byte packet\n", __func__, (int)len);
@@ -1033,8 +1050,8 @@ lws_parse_ws(struct lws *wsi, unsigned char **buf, size_t len)
 #if !defined(LWS_WITHOUT_EXTENSIONS)
 		if (wsi->ws->rx_draining_ext) {
 			lwsl_debug("%s: draining rx ext\n", __func__);
-			m = lws_ws_rx_sm(wsi, ALREADY_PROCESSED_IGNORE_CHAR, 0);
-			if (m < 0)
+			if (lws_ws_rx_sm(wsi, ALREADY_PROCESSED_IGNORE_CHAR, 0) ==
+						LWS_HPI_RET_PLEASE_CLOSE_ME)
 				return -1;
 			continue;
 		}
@@ -1066,7 +1083,7 @@ lws_parse_ws(struct lws *wsi, unsigned char **buf, size_t len)
 
 		if (!bulk) {
 			/* process the byte */
-			m = lws_ws_rx_sm(wsi, 0, *(*buf)++);
+			hr = lws_ws_rx_sm(wsi, 0, *(*buf)++);
 			len--;
 		} else {
 			/*
@@ -1079,11 +1096,11 @@ lws_parse_ws(struct lws *wsi, unsigned char **buf, size_t len)
 				   __func__, (int)len,
 				   wsi->ws->rx_draining_ext);
 #endif
-			m = lws_ws_rx_sm(wsi, ALREADY_PROCESSED_IGNORE_CHAR |
+			hr = lws_ws_rx_sm(wsi, ALREADY_PROCESSED_IGNORE_CHAR |
 					      ALREADY_PROCESSED_NO_CB, 0);
 		}
 
-		if (m < 0) {
+		if (hr == LWS_HPI_RET_PLEASE_CLOSE_ME) {
 			lwsl_info("%s: lws_ws_rx_sm bailed %d\n", __func__,
 				  bulk);
 

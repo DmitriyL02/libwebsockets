@@ -198,11 +198,19 @@ __lws_adopt_descriptor_vhost1(struct lws_vhost *vh, lws_adoption_type type,
 	lws_pt_unlock(pt);
 
 	/*
+	 * We can lose him from the context pre_natal "last resort" bind now,
+	 * because we will list him on a specific vhost
+	 */
+
+	lws_dll2_remove(&new_wsi->pre_natal);
+
+	/*
 	 * he's an allocated wsi, but he's not on any fds list or child list,
 	 * join him to the vhost's list of these kinds of incomplete wsi until
 	 * he gets another identity (he may do async dns now...)
 	 */
 	lws_vhost_lock(new_wsi->a.vhost);
+
 	lws_dll2_add_head(&new_wsi->vh_awaiting_socket,
 			  &new_wsi->a.vhost->vh_awaiting_socket_owner);
 	lws_vhost_unlock(new_wsi->a.vhost);
@@ -210,6 +218,10 @@ __lws_adopt_descriptor_vhost1(struct lws_vhost *vh, lws_adoption_type type,
 	return new_wsi;
 
 bail:
+        lws_pt_lock(pt, __func__); /* -------------- pt { */
+        lws_dll2_remove(&new_wsi->pre_natal);
+        lws_pt_unlock(pt); /* } pt --------------- */
+
 	lwsl_wsi_notice(new_wsi, "exiting on bail");
 	if (parent)
 		parent->child_list = new_wsi->sibling_list;
@@ -394,6 +406,17 @@ lws_adopt_descriptor_vhost2(struct lws *new_wsi, lws_adoption_type type,
 		if (new_wsi->a.context->event_loop_ops->sock_accept(new_wsi))
 			goto fail;
 
+	{
+        	struct lws *nwsi = lws_get_network_wsi(new_wsi);
+		char ta[64];
+
+        	if (nwsi->sa46_peer.sa4.sin_family)
+        	        lws_sa46_write_numeric_address(&nwsi->sa46_peer, ta, sizeof(ta));
+        	else
+                	strncpy(ta, "unknown", sizeof(ta));
+		__lws_lc_tag_append(&new_wsi->lc, ta);
+	}
+
 #if LWS_MAX_SMP > 1
 	/*
 	 * Caution: after this point the wsi is live on its service thread
@@ -413,12 +436,23 @@ lws_adopt_descriptor_vhost2(struct lws *new_wsi, lws_adoption_type type,
 		lws_pt_unlock(pt);
 	}
 #if defined(LWS_WITH_SERVER)
-	 else
+	 else {
+#if defined(LWS_WITH_LATENCY)
+		lws_usec_t _adptssl_start = lws_now_usecs();
+#endif
 		if (lws_server_socket_service_ssl(new_wsi, fd.sockfd, 0)) {
 			lwsl_wsi_info(new_wsi, "fail ssl negotiation");
 
 			goto fail;
 		}
+#if defined(LWS_WITH_LATENCY)
+		{
+			unsigned int ms = (unsigned int)((lws_now_usecs() - _adptssl_start) / 1000);
+			if (ms > 2)
+				lws_latency_note(pt, _adptssl_start, 2000, "adptssl:%dms", ms);
+		}
+#endif
+	}
 #endif
 
 	lws_vhost_lock(new_wsi->a.vhost);
@@ -520,28 +554,65 @@ lws_adopt_descriptor_vhost_via_info(const lws_adopt_desc_t *info)
 	}
 #endif
 
+#if defined(LWS_WITH_LATENCY)
+	lws_usec_t _adpt1_start = lws_now_usecs();
+#endif
+
 	lws_context_lock(info->vh->context, __func__);
 
 	new_wsi = __lws_adopt_descriptor_vhost1(info->vh, info->type,
 					      info->vh_prot_name, info->parent,
 					      info->opaque, info->fi_wsi_name);
+
+#if defined(LWS_WITH_LATENCY)
+	{
+		unsigned int ms = (unsigned int)((lws_now_usecs() - _adpt1_start) / 1000);
+		if (ms > 2)
+			lws_latency_note(info->vh->context->pt, _adpt1_start, 2000, "adpt1:%dms", ms);
+	}
+#endif
+
 	if (!new_wsi) {
 		if (info->type & LWS_ADOPT_SOCKET)
 			compatible_close(info->fd.sockfd);
 		goto bail;
 	}
 
+#if defined(LWS_WITH_LATENCY)
+	lws_usec_t _peer_start = lws_now_usecs();
+#endif
+
 	if (info->type & LWS_ADOPT_SOCKET &&
 	    getpeername(info->fd.sockfd, (struct sockaddr *)&new_wsi->sa46_peer,
 								    &slen) < 0)
 		lwsl_info("%s: getpeername failed\n", __func__);
+
+#if defined(LWS_WITH_LATENCY)
+	{
+		unsigned int ms = (unsigned int)((lws_now_usecs() - _peer_start) / 1000);
+		if (ms > 2)
+			lws_latency_note(info->vh->context->pt, _peer_start, 2000, "peer:%dms", ms);
+	}
+#endif
 
 #if defined(LWS_WITH_PEER_LIMITS)
 	if (peer)
 		lws_peer_add_wsi(info->vh->context, peer, new_wsi);
 #endif
 
+#if defined(LWS_WITH_LATENCY)
+	lws_usec_t _adpt2_start = lws_now_usecs();
+#endif
+
 	new_wsi = lws_adopt_descriptor_vhost2(new_wsi, info->type, info->fd);
+
+#if defined(LWS_WITH_LATENCY)
+	{
+		unsigned int ms = (unsigned int)((lws_now_usecs() - _adpt2_start) / 1000);
+		if (ms > 2)
+			lws_latency_note(info->vh->context->pt, _adpt2_start, 2000, "adpt2:%dms", ms);
+	}
+#endif
 
 bail:
 	lws_context_unlock(info->vh->context);
@@ -658,14 +729,39 @@ lws_create_adopt_udp2(struct lws *wsi, const char *ads,
 		goto bail;
 	}
 
-	m = lws_sort_dns(wsi, r);
+	if (r) {
+		m = lws_sort_dns(wsi, r);
 #if defined(LWS_WITH_SYS_ASYNC_DNS)
-	lws_async_dns_freeaddrinfo(&r);
+		lws_async_dns_freeaddrinfo(&r);
 #else
-	freeaddrinfo((struct addrinfo *)r);
+		freeaddrinfo((struct addrinfo *)r);
 #endif
-	if (m)
-		goto bail;
+		if (m)
+			goto bail;
+	} else {
+		/*
+		 * If we get here with r == NULL, it's because ads == NULL and
+		 * we're using ASYNC_DNS, taking the fast path because no lookup
+		 * is needed for INADDR_ANY. Synthesize a result.
+		 */
+		lws_dns_sort_t *s = lws_zalloc(sizeof(*s), __func__);
+		if (!s)
+			goto bail;
+
+#if defined(LWS_WITH_IPV6)
+		if (!lws_check_opt(wsi->a.context->options,
+				   LWS_SERVER_OPTION_DISABLE_IPV6)) {
+			s->dest.sa6.sin6_family = AF_INET6;
+			s->af = AF_INET6;
+		} else
+#endif
+		{
+			s->dest.sa4.sin_family = AF_INET;
+			s->dest.sa4.sin_addr.s_addr = INADDR_ANY;
+			s->af = AF_INET;
+		}
+		lws_dll2_add_tail(&s->list, &wsi->dns_sorted_list);
+	}
 
 	while (lws_dll2_get_head(&wsi->dns_sorted_list)) {
 		lws_dns_sort_t *s = lws_container_of(
@@ -728,10 +824,9 @@ lws_create_adopt_udp2(struct lws *wsi, const char *ads,
 		if (wsi->do_bind &&
 		    bind(sock.sockfd, sa46_sockaddr(&s->dest),
 #if defined(_WIN32)
-			 (int)sa46_socklen(&s->dest)
-#else
-			 sizeof(struct sockaddr)
+			 (int)
 #endif
+			 sa46_socklen(&s->dest)
 		) == -1) {
 			lwsl_err("%s: bind failed\n", __func__);
 			goto resume;

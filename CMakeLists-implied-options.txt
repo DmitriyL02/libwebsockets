@@ -1,7 +1,7 @@
 #
 # libwebsockets - small server side websockets and web server implementation
 #
-# Copyright (C) 2010 - 2020 Andy Green <andy@warmcat.com>
+# Copyright (C) 2010 - 2026 Andy Green <andy@warmcat.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to
@@ -27,10 +27,22 @@ if(IOS)
     set(LWS_DETECTED_PLAT_IOS 1)
 endif()
 
+if (LWS_WITH_SCHANNEL OR LWS_WITH_GNUTLS OR LWS_WITH_MBEDTLS OR LWS_WITH_BEARSSL)
+       set(LWS_WITH_SSL 1)
+endif()
+
 # Workaround for ESP-IDF
 # Detect ESP_PLATFORM environment flag, if exist, set LWS_WITH_ESP32.
 # Otherwise the user may not be able to run configuration ESP-IDF in the first time.
-if (ESP_PLATFORM)
+#
+# espressif-port patch: skip the ESP32 / FreeRTOS path when building
+# for the IDF Linux target. ESP_PLATFORM is set on every IDF build
+# (including --preview set-target linux), but the Linux target is a
+# POSIX/glibc environment and the FreeRTOS plat shims pull in IDF's
+# newlib platform_include — which uses `__assert_func` (newlib-only)
+# and `<sys/features.h>` (newlib path), neither of which exists on
+# glibc. Fall through to the upstream `plat/unix` path instead.
+if (ESP_PLATFORM AND NOT (DEFINED IDF_TARGET AND IDF_TARGET STREQUAL "linux"))
 	message(STATUS "ESP-IDF enabled")
 	set(LWS_WITH_ESP32 ON)
 	set(LWS_WITH_ZLIB OFF)
@@ -45,6 +57,11 @@ endif()
 
 if (LWS_PLAT_OPTEE)
 	set(LWS_WITH_UDP 0)
+endif()
+
+# h3 is based on quic
+if (LWS_WITH_HTTP3)
+	set(LWS_ROLE_QUIC 1)
 endif()
 
 if (LWS_PLAT_FREERTOS OR (${CMAKE_SYSTEM_NAME} MATCHES "QNX"))
@@ -113,6 +130,25 @@ if(LWS_WITH_DISTRO_RECOMMENDED)
 	set(LWS_WITH_SECURE_STREAMS 1)			# selfcontained
 	set(LWS_WITH_SECURE_STREAMS_PROXY_API 1)	# selfcontained
 	set(LWS_WITH_DIR 1)				# selfcontained
+	set(LWS_WITH_SELFDNS 1)				# selfcontained
+endif()
+
+if (LWS_WITH_SELFDNS)
+	set(LWS_WITH_DHT 1)
+	set(LWS_WITH_AUTHORITATIVE_DNS 1)
+	set(LWS_WITH_DHT_BACKEND 1)
+	set(LWS_WITH_ACME 1)
+	set(LWS_WITH_DIR 1)
+	set(LWS_WITH_TRANSPORT_SEQUENCER 1)
+	set(LWS_WITH_SYS_ASYNC_DNS 1)
+	set(LWS_WITH_SYS_ASYNC_DNS_DNSSEC 1)
+	set(LWS_WITH_AUTH_SERVER 1)
+	set(LWS_WITH_SYS_WHOIS 1)
+endif()
+
+if (LWS_WITH_AUTH_SERVER)
+	set(LWS_WITH_QRCODEGEN 1)
+	set(LWS_WITH_EMAIL 1)
 endif()
 
 # LWS_WITH_EVENT_LIBS is set if any event lib selected
@@ -134,6 +170,41 @@ if (LWS_WITH_SECURE_STREAMS_PROXY_API)
 	set(LWS_WITH_SYS_SMD 1)
 	set(LWS_WITH_SECURE_STREAMS 1)
 endif()
+
+if (LWS_WITH_DHT_BACKEND)
+	set(LWS_WITH_DHT 1)
+endif()
+
+if (LWS_WITH_DHT)
+	set(LWS_WITH_TRANSPORT_SEQUENCER 1)
+endif()
+
+if (LWS_WITH_TRANSPORT_SEQUENCER)
+	set(LWS_WITH_LWS_DSH 1)
+endif()
+
+if (LWS_WITH_WEBRTC_MIXER)
+	set(LWS_WITH_WEBRTC 1)
+	set(LWS_WITH_ALSA 1 CACHE BOOL "Enable alsa audio example" FORCE)
+	set(LWS_WITH_OPUS 1 CACHE BOOL "Enable opus audio codec" FORCE)
+	set(LWS_WITH_GSTREAMER 1 CACHE BOOL "Enable gstreamer" FORCE)
+endif()
+
+if (LWS_WITH_WEBRTC)
+	set(LWS_WITH_UDP 1)
+	set(LWS_WITH_DTLS 1)
+	set(LWS_WITH_PLUGINS 1 CACHE BOOL "Enable plugins" FORCE)
+	set(LWS_WITH_V4L2 1)
+	set(LWS_WITH_LIBV4L2 1)
+	set(LWS_WITH_DRM 1)
+	set(LWS_WITH_GENCRYPTO 1)
+	set(LWS_WITH_JOSE 1)
+	set(LWS_WITH_NETWORK 1)
+	set(LWS_WITH_CLIENT 1)
+	set(LWS_WITH_ALSA 1)
+	set(LWS_WITH_OPUS 1)
+endif()
+
 
 if (NOT LWS_WITH_NETWORK)
 	set(LWS_ROLE_MQTT 0)
@@ -160,9 +231,15 @@ if (NOT LWS_WITH_NETWORK)
 	set(LWS_WITH_THREADPOOL 0)
 	set(LWS_WITH_SYS_SMD 0)
 	set(LWS_WITH_LHP 0)
+	set(LWS_WITH_SPAWN 0)
+	set(LWS_WITH_STUB 0)
 endif()
 
 if (LWS_WITH_CGI)
+	set(LWS_WITH_SPAWN 1)
+endif()
+
+if (LWS_WITH_STUB)
 	set(LWS_WITH_SPAWN 1)
 endif()
 
@@ -176,6 +253,10 @@ if (LWS_WITH_HTTP_BASIC_AUTH)
 endif()
 
 if (LWS_WITH_SECURE_STREAMS_AUTH_SIGV4)
+	set(LWS_WITH_GENCRYPTO 1)
+endif()
+
+if (LWS_WITH_HTTP_DIGEST_AUTH)
 	set(LWS_WITH_GENCRYPTO 1)
 endif()
 
@@ -197,6 +278,9 @@ endif()
 
 if (LWS_WITH_HTTP2)
 	set(LWS_ROLE_H2 1)
+endif()
+if (LWS_WITH_HTTP3)
+	set(LWS_ROLE_H3 1)
 endif()
 if (LWS_WITH_CGI)
 	set(LWS_ROLE_CGI 1)
@@ -236,6 +320,7 @@ if (LWS_WITH_ACME)
  set (LWS_WITH_CLIENT 1)
  set (LWS_WITH_SERVER 1)
  set (LWS_WITH_JOSE 1)
+ set (LWS_WITH_STRUCT_JSON 1)
 endif()
 
 if (LWS_WITH_JOSE)
@@ -336,10 +421,6 @@ if (NOT LWS_WITHOUT_EXTENSIONS OR LWS_WITH_ZIP_FOPS)
 	set(LWS_WITH_ZLIB 1)
 endif()
 
-if (LWS_WITH_SECURE_STREAMS)
-	set(LWS_WITH_SECURE_STREAMS_SYS_AUTH_API_AMAZON_COM 1)
-endif()
-
 if (NOT (LWS_WITH_STATIC OR LWS_WITH_SHARED))
 	message(FATAL_ERROR "Makes no sense to compile with neither static nor shared libraries.")
 endif()
@@ -365,14 +446,20 @@ endif()
 
 set(LWS_WITH_CLIENT 1)
 if (LWS_WITHOUT_CLIENT)
-	set(LWS_WITH_CLIENT 0)
+	set(LWS_WITH_CLIENT OFF)
 	set(LWS_WITH_SECURE_STREAMS 0)
 	set(LWS_WITH_SECURE_STREAMS_PROXY_API 0)
 	set(LWS_WITH_LHP 0)
 endif()
 set(LWS_WITH_SERVER 1)
 if (LWS_WITHOUT_SERVER)
-	set(LWS_WITH_SERVER)
+	set(LWS_WITH_SERVER OFF)
+endif()
+
+if (LWS_WITH_SERVER)
+else()
+	set(LWS_WITH_CGI 0)
+	set(LWS_ROLE_CGI 0)
 endif()
 
 if (LWS_WITH_UPNG)
@@ -390,6 +477,21 @@ if (LWS_WITH_LHP)
 	set(LWS_WITH_SECURE_STREAMS 1)
 endif()
 
+if (LWS_WITH_AUTHORITATIVE_DNS)
+	set(LWS_WITH_GENCRYPTO 1)
+	set(LWS_WITH_JOSE 1)
+	if (LWS_WITH_DHT)
+		# dht_dnssec_monitor plugin requires these
+		set(LWS_WITH_DIR 1)
+		set(LWS_WITH_SPAWN 1)
+	endif()
+endif()
+
+if (LWS_WITH_SYS_ASYNC_DNS_DNSSEC)
+	set(LWS_WITH_SYS_ASYNC_DNS 1)
+	set(LWS_WITH_GENCRYPTO 1)
+endif()
+
 # using any abstract protocol enables LWS_WITH_ABSTRACT
 
 #if (LWS_WITH_SMTP)
@@ -405,7 +507,7 @@ if (LWS_SSL_SERVER_WITH_ECDH_CERT)
 endif()
 
 # LWS_OPENSSL_SUPPORT deprecated... use LWS_WITH_TLS
-if (LWS_WITH_SSL OR LWS_WITH_MBEDTLS)
+if (LWS_WITH_SSL OR LWS_WITH_MBEDTLS OR LWS_WITH_BEARSSL)
 	set(LWS_OPENSSL_SUPPORT 1)
 	set(LWS_WITH_TLS 1)
 endif()
@@ -443,3 +545,17 @@ if (WIN32 AND NOT LWS_EXT_PTHREAD_LIBRARIES)
         set(LWS_WITH_SYS_SMD 0)
 endif()
 
+if (LWS_WITH_ASYNC_QUEUE)
+	set(LWS_ROLE_H1 1)
+endif()
+
+#
+# Make sure any final implied 'with' selections reset the corresponding 'without'
+# guards so scripts checking 'NOT LWS_WITHOUT_x' correctly evaluate to true.
+#
+if (LWS_WITH_CLIENT)
+	set(LWS_WITHOUT_CLIENT 0)
+endif()
+if (LWS_WITH_SERVER)
+	set(LWS_WITHOUT_SERVER 0)
+endif()
